@@ -1,0 +1,863 @@
+/* ui.js — رابط کاربری و ذخیره‌سازی شیفت‌یار */
+'use strict';
+const {
+  MONTHS, WD_SHORT, WD_FULL, SPECIAL, CONTRACTS, fa, toLatin, fmtHM, fmtHMlatin, fmtDate, fmtDateLatin, parseDate, toMin,
+  j2d, d2j, monthLen, weekdayOf, todayJdn, shiftIvs, shiftMinutes, ivsMinutes, ivText, holidayInfo, holidayMap,
+  computeRange, restIssues, validateShift, pad2,
+} = Core;
+
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const uid = (p) => p + Math.random().toString(36).slice(2, 7) + Date.now().toString(36).slice(-3);
+const N = (t) => `<span class="num">${t}</span>`;
+const hmH = (min) => N(fmtHM(min));
+const NO_COLOR = '#8a94a6';
+
+/* ---------- داده ---------- */
+const DB = { cfg: null, assign: {}, log: [] };
+const ui = {
+  tab: 'sched', jy: 1405, jm: 1, dept: 'all', brush: 'M', pcalPerson: '', editPerson: null, shiftDraft: null,
+  rep: { from: null, to: null, dept: 'all' }, undo: [], ctx: null,
+};
+
+function defaultCfg() {
+  return { settings: Core.defaultSettings(), depts: [], people: [], shifts: Core.defaultShifts(), holidays: Core.defaultHolidays(), sample: false };
+}
+function normalizeCfg(c) {
+  const d = defaultCfg();
+  c = c || {};
+  const s = Object.assign({}, d.settings, c.settings || {});
+  s.factors = Object.assign({}, d.settings.factors, (c.settings || {}).factors || {});
+  return {
+    settings: s,
+    depts: Array.isArray(c.depts) ? c.depts : [],
+    people: Array.isArray(c.people) ? c.people : [],
+    shifts: Array.isArray(c.shifts) && c.shifts.length ? c.shifts : d.shifts,
+    holidays: Array.isArray(c.holidays) ? c.holidays : d.holidays,
+    sample: !!c.sample,
+  };
+}
+const dbv = () => ({ settings: DB.cfg.settings, holidays: DB.cfg.holidays, shifts: DB.cfg.shifts, assign: DB.assign });
+const person = (id) => DB.cfg.people.find((p) => p.id === id);
+const dept = (id) => DB.cfg.depts.find((d) => d.id === id);
+const pname = (p) => `${p.first || ''} ${p.last || ''}`.trim() || 'بدون نام';
+const deptColor = (p) => (dept(p.deptId) || {}).color || NO_COLOR;
+const shiftOf = (code) => DB.cfg.shifts.find((s) => s.code === code);
+const codeLabel = (c) => (!c ? 'خالی' : SPECIAL[c] ? SPECIAL[c].name : c);
+const monthId = (jy, jm) => jy + '-' + pad2(jm);
+
+/* ---------- ذخیره‌سازی ---------- */
+const Store = {
+  mode: 'none', db: null, dl: null, loaded: new Set(), status: 'saved', err: '',
+  dirty: { cfg: false, log: false, months: new Set() }, timer: null, busy: false, again: false,
+
+  async init() {
+    try {
+      if (window.claude && typeof window.claude.use === 'function') {
+        this.db = await window.claude.use('db');
+        this.dl = await window.claude.use('downloads');
+      }
+    } catch (e) { this.db = null; }
+    if (this.db) {
+      this.mode = 'db';
+      try {
+        const [c, l] = await Promise.all([this.db.doc('app/config').get(), this.db.doc('app/log').get()]);
+        DB.cfg = c.exists ? normalizeCfg(c.data()) : defaultCfg();
+        DB.log = l.exists ? (l.data().items || []) : [];
+      } catch (e) { this.fail(e); DB.cfg = defaultCfg(); }
+    } else {
+      this.mode = 'local';
+      DB.cfg = defaultCfg();
+      try {
+        const raw = localStorage.getItem('shiftyar.v1');
+        if (raw) { const o = JSON.parse(raw); DB.cfg = normalizeCfg(o.cfg); DB.assign = o.assign || {}; DB.log = o.log || []; }
+      } catch (e) { /* خالی */ }
+    }
+  },
+  async ensureMonth(jy, jm) {
+    if (this.mode !== 'db') return;
+    const id = monthId(jy, jm);
+    if (this.loaded.has(id)) return;
+    try {
+      const s = await this.db.doc('assign/' + id).get();
+      if (s.exists) this.mergeMonth(jy, jm, (s.data() || {}).m || {});
+      this.loaded.add(id);
+    } catch (e) { this.fail(e); }
+  },
+  mergeMonth(jy, jm, m) {
+    const a = j2d(jy, jm, 1);
+    for (const k in m) {
+      const i = k.lastIndexOf(':');
+      const pid = k.slice(0, i), dd = +k.slice(i + 1);
+      (DB.assign[pid] = DB.assign[pid] || {})[a + dd - 1] = m[k];
+    }
+  },
+  async ensureRange(a, b) {
+    if (this.mode !== 'db') return;
+    let { jy, jm } = d2j(a - 3);
+    const end = d2j(b);
+    while (jy < end.jy || (jy === end.jy && jm <= end.jm)) {
+      await this.ensureMonth(jy, jm);
+      jm++; if (jm > 12) { jm = 1; jy++; }
+    }
+  },
+  async loadAll() {
+    if (this.mode !== 'db') return;
+    try {
+      const snap = await this.db.collection('assign').get();
+      for (const d of snap.docs) {
+        if (this.loaded.has(d.id)) continue;
+        const m = /^(\d{4})-(\d{2})$/.exec(d.id);
+        if (m) { this.mergeMonth(+m[1], +m[2], (d.data() || {}).m || {}); this.loaded.add(d.id); }
+      }
+    } catch (e) { this.fail(e); }
+  },
+  touchMonth(j) { const d = d2j(j); this.dirty.months.add(monthId(d.jy, d.jm)); this.schedule(); },
+  touchCfg() { this.dirty.cfg = true; this.schedule(); },
+  touchLog() { this.dirty.log = true; this.schedule(); },
+  monthDoc(jy, jm) {
+    const a = j2d(jy, jm, 1), b = a + monthLen(jy, jm) - 1, m = {};
+    for (const pid in DB.assign) { const mine = DB.assign[pid]; for (let j = a; j <= b; j++) if (mine[j]) m[pid + ':' + (j - a + 1)] = mine[j]; }
+    return { m };
+  },
+  setStatus(s) {
+    this.status = s;
+    const el = $('#savestate');
+    if (el) { el.className = 'save ' + s; el.lastElementChild.textContent = this.statusText(); }
+  },
+  statusText() {
+    if (this.status === 'saving') return 'در حال ذخیره…';
+    if (this.status === 'error') return 'ذخیره نشد' + (this.err ? ': ' + this.err : '');
+    return this.mode === 'db' ? 'ذخیره شد' : 'ذخیره در همین مرورگر';
+  },
+  fail(e) { this.err = (e && (e.message || e.code)) || 'خطا'; this.setStatus('error'); },
+  schedule() { clearTimeout(this.timer); this.setStatus('saving'); this.timer = setTimeout(() => this.flush(), 500); },
+  async flush() {
+    if (this.busy) { this.again = true; return; }
+    this.busy = true;
+    const d = this.dirty;
+    const cfg = d.cfg, log = d.log, months = Array.from(d.months);
+    d.cfg = false; d.log = false; d.months = new Set();
+    try {
+      if (this.mode === 'local') {
+        localStorage.setItem('shiftyar.v1', JSON.stringify({ cfg: DB.cfg, assign: DB.assign, log: DB.log }));
+      } else if (this.mode === 'db') {
+        if (cfg) await this.db.doc('app/config').set(Object.assign({ v: 1 }, DB.cfg));
+        for (const id of months) {
+          if (!this.loaded.has(id)) continue;
+          const [y, m] = id.split('-').map(Number);
+          await this.db.doc('assign/' + id).set(this.monthDoc(y, m));
+        }
+        if (log) await this.db.doc('app/log').set({ items: DB.log });
+      }
+      this.err = '';
+      this.setStatus('saved');
+    } catch (e) {
+      if (cfg) d.cfg = true; if (log) d.log = true; months.forEach((x) => d.months.add(x));
+      this.fail(e);
+    } finally {
+      this.busy = false;
+      if (this.again) { this.again = false; this.flush(); }
+    }
+  },
+  /** جایگزینی کل داده‌ها (بازیابی پشتیبان یا پاک‌سازی) */
+  async replaceAll(cfg, assign, log) {
+    await this.loadAll();
+    const oldIds = Array.from(this.loaded);
+    DB.cfg = cfg; DB.assign = assign; DB.log = log;
+    const newIds = new Set();
+    for (const pid in assign) for (const j in assign[pid]) { const d = d2j(+j); newIds.add(monthId(d.jy, d.jm)); }
+    if (this.mode === 'db') {
+      for (const id of oldIds) if (!newIds.has(id)) { try { await this.db.doc('assign/' + id).delete(); } catch (e) { this.fail(e); } }
+      this.loaded = new Set(newIds);
+    }
+    this.dirty.cfg = true; this.dirty.log = true; this.dirty.months = new Set(newIds);
+    this.schedule();
+  },
+};
+
+/* ---------- عملیات روی داده ---------- */
+function logEv(text) {
+  DB.log.unshift({ t: Date.now(), x: text });
+  if (DB.log.length > 200) DB.log.length = 200;
+  Store.touchLog();
+}
+function setAssign(pid, j, code, stroke) {
+  const mine = (DB.assign[pid] = DB.assign[pid] || {});
+  const old = mine[j];
+  if (old === code || (!old && !code)) return false;
+  if (code) mine[j] = code; else delete mine[j];
+  if (stroke) stroke.push({ pid, j, old, nw: code });
+  Store.touchMonth(j);
+  return true;
+}
+function finishStroke(stroke, label) {
+  if (!stroke || !stroke.length) return;
+  ui.undo.push(stroke);
+  if (ui.undo.length > 50) ui.undo.shift();
+  if (stroke.length === 1) {
+    const s = stroke[0], p = person(s.pid);
+    logEv(`${p ? pname(p) : '؟'} — ${fmtDate(s.j)}: ${codeLabel(s.old)} ← ${codeLabel(s.nw)}`);
+  } else logEv(`${fa(stroke.length)} خانه تغییر کرد (${label || 'قلم'})`);
+  const btn = $('[data-act="undo"]'); if (btn) btn.disabled = false;
+}
+
+/* ---------- نمایش‌های مشترک ---------- */
+function monthInfo() { const a = j2d(ui.jy, ui.jm, 1), len = monthLen(ui.jy, ui.jm); return { a, len, b: a + len - 1 }; }
+function chipHtml(code, color) {
+  if (!code) return '';
+  if (SPECIAL[code]) return `<span class="c sp ${code}" title="${esc(SPECIAL[code].name)}">${SPECIAL[code].short}</span>`;
+  const sh = shiftOf(code);
+  return `<span class="c" style="--dc:${esc(color)}" title="${esc(sh ? sh.name : code)}">${esc(code)}</span>`;
+}
+function sortedPeople() {
+  const di = (p) => { const i = DB.cfg.depts.findIndex((d) => d.id === p.deptId); return i < 0 ? 999 : i; };
+  return DB.cfg.people.slice().sort((x, y) => di(x) - di(y) || (x.last || '').localeCompare(y.last || '', 'fa') || (x.first || '').localeCompare(y.first || '', 'fa'));
+}
+function visiblePeople() {
+  let ps = sortedPeople();
+  if (ui.dept === 'none') ps = ps.filter((p) => !dept(p.deptId));
+  else if (ui.dept !== 'all') ps = ps.filter((p) => p.deptId === ui.dept);
+  return ps;
+}
+function brushBar() {
+  const sh = DB.cfg.shifts;
+  const b = (k, big, small) => `<button type="button" data-brush="${esc(k)}" aria-pressed="${ui.brush === k}"><b>${big}</b><small>${small}</small></button>`;
+  return `<div class="brush" role="group" aria-label="قلم رنگ‌آمیزی"><span class="lab">قلم:</span>
+    ${sh.map((s) => b(s.code, esc(s.code), hmH(shiftMinutes(sh, s.code)))).join('')}
+    <span class="gap"></span>
+    ${Object.keys(SPECIAL).map((k) => b(k, SPECIAL[k].short, SPECIAL[k].name)).join('')}
+    <span class="gap"></span>${b('ERASE', 'پاک‌کن', '')}</div>`;
+}
+function monthNav(extra) {
+  return `<div class="bar"><div class="month-nav">
+    <button class="btn" data-act="mprev" aria-label="ماه قبل">›</button>
+    <span class="lab">${MONTHS[ui.jm - 1]} ${fa(ui.jy)}</span>
+    <button class="btn" data-act="mnext" aria-label="ماه بعد">‹</button>
+    <button class="btn sm" data-act="mtoday">این ماه</button></div>${extra || ''}</div>`;
+}
+const deptSelect = (id, val, withNone) => `<select id="${id}">
+  <option value="all"${val === 'all' ? ' selected' : ''}>همهٔ بخش‌ها</option>
+  ${DB.cfg.depts.map((d) => `<option value="${esc(d.id)}"${val === d.id ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}
+  ${withNone ? `<option value="none"${val === 'none' ? ' selected' : ''}>بدون بخش</option>` : ''}</select>`;
+
+/* ---------- تب: برنامه شیفت ---------- */
+function rowHtml(p, ctx) {
+  const { a, len, b, hm, T } = ctx;
+  const mine = DB.assign[p.id] || {};
+  const iss = restIssues(dbv(), p);
+  const color = deptColor(p);
+  let cells = '';
+  for (let i = 0; i < len; i++) {
+    const j = a + i;
+    cells += `<td class="cell${hm[j] ? ' hol' : ''}${iss[j] ? ' warn' : ''}" data-pid="${p.id}" data-j="${j}" tabindex="-1" role="button" aria-label="${esc(pname(p))}، ${fa(i + 1)} ${MONTHS[ui.jm - 1]}"${iss[j] ? ` title="${esc(iss[j].join(' / '))}"` : ''}>${chipHtml(mine[j], color)}</td>`;
+  }
+  const r = computeRange(dbv(), p, a, b, hm);
+  const ot = r.overtime;
+  const cap = DB.cfg.settings.otCapH * 60;
+  const over = cap > 0 && ot > cap;
+  return `<tr data-pid="${p.id}"><th class="nm" scope="row" style="--dc:${esc(color)}"><b>${esc(pname(p))}</b><small>${esc(p.code || '')}${p.code ? ' · ' : ''}${CONTRACTS[p.contract] || ''}</small></th>${cells}
+    <td class="sum">${hmH(r.duty)}</td><td class="sum">${hmH(r.weighted + r.credit)}</td>
+    <td class="sum ot ${ot < 0 ? 'neg' : ot > 0 ? 'pos' : ''}"${over ? ' title="بیش از سقف اضافه‌کار"' : ''}>${hmH(ot)}${over ? ' ⚠' : ''}</td></tr>`;
+}
+function warnList(ps, ctx) {
+  const items = [];
+  for (const p of ps) {
+    const iss = restIssues(dbv(), p);
+    for (const k in iss) { const j = +k; if (j >= ctx.a && j <= ctx.b) items.push({ j, text: `${pname(p)} — ${fmtDate(j)}: ${iss[k][0]}` }); }
+  }
+  items.sort((x, y) => x.j - y.j);
+  return items;
+}
+function sideHtml(ps, ctx) {
+  const w = warnList(ps, ctx);
+  const holN = ctx.holCount;
+  const stats = `<div class="note">موظفی این ماه برای هر نفر: ${hmH((ctx.len - holN) * DB.cfg.settings.dutyMin)} (${N(fa(ctx.len - holN))} روز کاری از ${N(fa(ctx.len))} روز؛ ${N(fa(holN))} روز تعطیل)</div>`;
+  const wl = w.length
+    ? `<details class="warns" open><summary>${N(fa(w.length))} هشدار فاصلهٔ بین شیفت‌ها</summary><ul>${w.slice(0, 80).map((x) => `<li>${esc(x.text)}</li>`).join('')}</ul></details>`
+    : `<div class="note">هشداری برای فاصلهٔ بین شیفت‌ها نیست.</div>`;
+  return stats + wl;
+}
+function viewSched() {
+  const { a, len, b } = monthInfo();
+  const hm = holidayMap(DB.cfg.settings, DB.cfg.holidays, a, b);
+  let holCount = 0; for (let j = a; j <= b; j++) if (hm[j]) holCount++;
+  const ctx = (ui.ctx = { a, len, b, hm, T: todayJdn(), holCount });
+  const ps = visiblePeople();
+  const sampleBar = DB.cfg.sample ? `<div class="msg">داده‌های این صفحه نمونه‌اند. وقتی آمادهٔ ثبت اطلاعات واقعی بودید، <button class="btn sm danger" data-act="clearsample" data-confirm="مطمئنید؟ همهٔ پرسنل، بخش‌ها و برنامه‌ها پاک می‌شوند">پاک‌کردن پرسنل و برنامه</button></div>` : '';
+  let head = '<th class="nm">پرسنل</th>';
+  for (let i = 0; i < len; i++) {
+    const j = a + i;
+    head += `<th class="${hm[j] ? 'hol' : ''}${j === ctx.T ? ' today' : ''}" title="${hm[j] ? esc(hm[j].name) : ''}">${fa(i + 1)}<small>${WD_SHORT[weekdayOf(j)]}</small></th>`;
+  }
+  head += '<th class="sum">موظفی</th><th class="sum">کارکرد</th><th class="sum">اضافه / کسر</th>';
+  let body = '', lastDept = null;
+  for (const p of ps) {
+    if (ui.dept === 'all' && p.deptId !== lastDept) {
+      lastDept = p.deptId;
+      const d = dept(p.deptId);
+      body += `<tr class="grp"><td colspan="${len + 4}" style="--dc:${esc(d ? d.color : NO_COLOR)}">${esc(d ? d.name : 'بدون بخش')}</td></tr>`;
+    }
+    body += rowHtml(p, ctx);
+  }
+  const legend = `<div class="legend">${DB.cfg.shifts.map((s) => `<span><span class="c" style="--dc:${NO_COLOR}">${esc(s.code)}</span>${esc(s.name)} ${hmH(shiftMinutes(DB.cfg.shifts, s.code))}</span>`).join('')}</div>`;
+  return `${sampleBar}
+    ${monthNav(`<span class="sp"></span>${deptSelect('f-dept', ui.dept, true)}`)}
+    <div class="panel">${brushBar()}
+      <div class="bar">
+        <button class="btn" data-act="undo"${ui.undo.length ? '' : ' disabled'}>بازگردانی آخرین تغییر</button>
+        <label class="rows"><span class="note">کپی الگو از</span>
+          <select id="copy-src"><option value="7">۷ روز قبل (هفتگی)</option><option value="14">۱۴ روز قبل</option><option value="28">۲۸ روز قبل</option><option value="pm">همان تاریخِ ماه قبل</option></select></label>
+        <button class="btn" data-act="copypat" data-confirm="خانه‌های این ماه رونویسی می‌شوند. تأیید؟">اعمال</button>
+        <span class="sp"></span>
+        <button class="btn danger" data-act="clearmonth" data-confirm="برنامهٔ این ماه پاک شود؟">پاک‌کردن ماه</button>
+      </div>
+      <div class="note">با قلم انتخاب‌شده روی خانه‌ها بکشید یا کلیک کنید. کلیک دوباره روی خانه‌ای با همان مقدار، آن را پاک می‌کند. ستون‌های قرمز تعطیل‌اند.</div>
+    </div>
+    ${ps.length ? `<div class="rwrap"><table class="roster" id="roster"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`
+      : `<div class="panel empty"><b>هنوز پرسنلی در این نما نیست</b><span>از تب «پرسنل» نفرات را اضافه کنید، سپس اینجا شیفت‌ها را بکشید.</span><button class="btn primary" data-tab="people">رفتن به پرسنل</button></div>`}
+    ${legend}<div id="side" class="rows" style="flex-direction:column;align-items:stretch;gap:8px">${sideHtml(ps, ctx)}</div>`;
+}
+let sideQueued = false;
+function refreshSide() {
+  if (sideQueued) return;
+  sideQueued = true;
+  requestAnimationFrame(() => { sideQueued = false; const el = $('#side'); if (el && ui.ctx && ui.tab === 'sched') el.innerHTML = sideHtml(visiblePeople(), ui.ctx); });
+}
+function refreshRow(pid) {
+  const p = person(pid), tr = $(`tr[data-pid="${pid}"]`);
+  if (p && tr && ui.ctx) {
+    const t = document.createElement('tbody');
+    t.innerHTML = rowHtml(p, ui.ctx);
+    tr.replaceWith(t.firstElementChild);
+  }
+  refreshSide();
+}
+
+/* ---------- تب: تقویم فرد ---------- */
+function viewPcal() {
+  const ps = sortedPeople();
+  if (!ps.length) return `<div class="panel empty"><b>پرسنلی ثبت نشده</b><button class="btn primary" data-tab="people">افزودن پرسنل</button></div>`;
+  if (!person(ui.pcalPerson)) ui.pcalPerson = ps[0].id;
+  return `${monthNav(`<span class="sp"></span><select id="pcal-person" aria-label="فرد">${ps.map((p) => `<option value="${p.id}"${p.id === ui.pcalPerson ? ' selected' : ''}>${esc(pname(p))}</option>`).join('')}</select>`)}
+    <div class="panel">${brushBar()}<div id="pcal-body">${pcalBody()}</div></div>`;
+}
+function pcalBody() {
+  const p = person(ui.pcalPerson); if (!p) return '';
+  const { a, len, b } = monthInfo();
+  const hm = holidayMap(DB.cfg.settings, DB.cfg.holidays, a, b);
+  const mine = DB.assign[p.id] || {};
+  const iss = restIssues(dbv(), p);
+  const r = computeRange(dbv(), p, a, b, hm);
+  const T = todayJdn(), color = deptColor(p);
+  let h = WD_FULL.map((w) => `<div class="wh">${w}</div>`).join('');
+  for (let i = 0; i < weekdayOf(a); i++) h += '<div class="pc-day blank"></div>';
+  for (let i = 0; i < len; i++) {
+    const j = a + i;
+    h += `<div class="pc-day cell${hm[j] ? ' hol' : ''}${j === T ? ' today' : ''}${iss[j] ? ' warn' : ''}" data-pid="${p.id}" data-j="${j}" role="button" tabindex="0"${iss[j] ? ` title="${esc(iss[j].join(' / '))}"` : ''}><div class="d"><span>${fa(i + 1)}</span>${hm[j] ? `<em>${esc(hm[j].name)}</em>` : ''}</div>${chipHtml(mine[j], color)}</div>`;
+  }
+  const ot = r.overtime;
+  const st = (l, v, cls) => `<div class="stat ${cls || ''}"><small>${l}</small><b>${hmH(v)}</b></div>`;
+  return `<div class="stats">${st('موظفی ماه', r.duty)}${st('کارکرد واقعی', r.actual)}${st('کارکرد با ضریب تعطیلی', r.weighted)}${st('اعتبار مرخصی/استعلاجی', r.credit)}${st(ot < 0 ? 'کسری' : 'اضافه‌کار', ot, ot < 0 ? 'neg' : ot > 0 ? 'pos' : '')}</div>
+    <div class="pcal">${h}</div>`;
+}
+function refreshPcal() { const el = $('#pcal-body'); if (el) el.innerHTML = pcalBody(); }
+
+/* ---------- تب: پرسنل ---------- */
+function viewPeople() {
+  const e = person(ui.editPerson) || {};
+  const ps = sortedPeople();
+  const form = `<form class="panel" id="f-person" autocomplete="off">
+    <h2>${e.id ? 'ویرایش پرسنل' : 'افزودن پرسنل'}</h2>
+    <div class="formgrid">
+      <label class="f">نام<input type="text" name="first" required value="${esc(e.first)}"></label>
+      <label class="f">نام خانوادگی<input type="text" name="last" required value="${esc(e.last)}"></label>
+      <label class="f">کد پرسنلی<input type="text" name="code" dir="ltr" value="${esc(e.code)}"></label>
+      <label class="f">شمارهٔ تماس<input type="tel" name="phone" dir="ltr" value="${esc(e.phone)}"></label>
+      <label class="f">نوع قرارداد<select name="contract">${Object.keys(CONTRACTS).map((k) => `<option value="${k}"${(e.contract || 'company') === k ? ' selected' : ''}>${CONTRACTS[k]}</option>`).join('')}</select></label>
+      <label class="f">بخش<select name="deptId"><option value="">بدون بخش</option>${DB.cfg.depts.map((d) => `<option value="${esc(d.id)}"${e.deptId === d.id ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select></label>
+    </div>
+    <div class="bar"><button class="btn primary" type="submit">${e.id ? 'ذخیرهٔ تغییرات' : 'افزودن'}</button>${e.id ? '<button class="btn" type="button" data-act="cancelperson">انصراف</button>' : ''}<span id="f-person-msg"></span></div>
+    ${DB.cfg.depts.length ? '' : '<div class="note">برای دسته‌بندی با رنگ، ابتدا از تب «بخش‌ها» بخش بسازید.</div>'}
+  </form>`;
+  const list = ps.length
+    ? `<div class="tw"><table class="t"><thead><tr><th>کد</th><th>نام</th><th>بخش</th><th>قرارداد</th><th>تماس</th><th></th></tr></thead><tbody>
+      ${ps.map((p) => `<tr><td>${esc(p.code || '—')}</td><td>${esc(pname(p))}</td><td>${dept(p.deptId) ? `<span class="dot" style="--dc:${esc(dept(p.deptId).color)}"></span>${esc(dept(p.deptId).name)}` : '—'}</td><td><span class="pill">${CONTRACTS[p.contract] || ''}</span></td><td dir="ltr" style="text-align:right">${esc(p.phone || '—')}</td>
+        <td><button class="btn sm" data-act="editperson" data-id="${p.id}">ویرایش</button> <button class="btn sm danger" data-act="delperson" data-id="${p.id}" data-confirm="حذف با برنامه‌هایش؟">حذف</button></td></tr>`).join('')}
+      </tbody></table></div>`
+    : `<div class="panel empty"><b>پرسنلی ثبت نشده</b><span>فرم بالا را پر کنید.</span></div>`;
+  return `<div class="split">${form}<div style="display:flex;flex-direction:column;gap:10px;min-width:0"><h2>${N(fa(ps.length))} نفر</h2>${list}</div></div>`;
+}
+
+/* ---------- تب: بخش‌ها ---------- */
+const PALETTE = ['#e0573f', '#2f7dd1', '#2e9e7a', '#8b5cd6', '#d9a21b', '#d6479b', '#4a8c9f', '#7a8450'];
+function viewDepts() {
+  const rows = DB.cfg.depts.map((d) => {
+    const n = DB.cfg.people.filter((p) => p.deptId === d.id).length;
+    return `<tr><td><input type="color" data-dcolor="${esc(d.id)}" value="${esc(d.color)}" aria-label="رنگ ${esc(d.name)}"></td>
+      <td><input type="text" data-dname="${esc(d.id)}" value="${esc(d.name)}" aria-label="نام بخش"></td><td>${N(fa(n))} نفر</td>
+      <td><button class="btn sm danger" data-act="deldept" data-id="${esc(d.id)}" data-confirm="حذف بخش؟">حذف</button></td></tr>`;
+  }).join('');
+  return `<div class="split"><form class="panel" id="f-dept" autocomplete="off"><h2>بخش جدید</h2>
+    <div class="formgrid"><label class="f">نام بخش<input type="text" name="name" required placeholder="مثلاً اورژانس"></label>
+    <label class="f">رنگ<input type="color" name="color" value="${PALETTE[DB.cfg.depts.length % PALETTE.length]}"></label></div>
+    <div class="bar"><button class="btn primary" type="submit">افزودن بخش</button></div>
+    <div class="note">رنگ هر بخش در تقویم روی نوار کنار نام و خانه‌های شیفت پرسنل آن بخش دیده می‌شود. تعداد بخش‌ها محدود نیست.</div></form>
+    <div style="min-width:0">${DB.cfg.depts.length ? `<div class="tw"><table class="t"><thead><tr><th>رنگ</th><th>نام</th><th>پرسنل</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="panel empty"><b>هنوز بخشی نیست</b></div>'}</div></div>`;
+}
+
+/* ---------- تب: شیفت‌ها ---------- */
+function viewShifts() {
+  const sh = DB.cfg.shifts;
+  const rows = sh.map((s) => {
+    const ivs = shiftIvs(sh, s.code);
+    return `<tr><td><b>${esc(s.code)}</b></td><td>${esc(s.name)}</td><td>${s.kind === 'combo' ? 'ترکیبی' : 'ساده'}</td><td>${N(ivText(ivs))}</td><td class="n">${hmH(ivsMinutes(ivs))}</td>
+      <td><button class="btn sm" data-act="editshift" data-id="${esc(s.code)}">ویرایش</button> <button class="btn sm danger" data-act="delshift" data-id="${esc(s.code)}" data-confirm="حذف شیفت؟">حذف</button></td></tr>`;
+  }).join('');
+  const d = ui.shiftDraft;
+  let editor = `<div class="panel empty"><span>برای ساخت شیفت دلخواه:</span><button class="btn primary" data-act="newshift">شیفت جدید</button></div>`;
+  if (d) {
+    const simples = sh.filter((s) => s.kind !== 'combo' && s.code !== d.orig);
+    const segRows = (d.segs || []).map((g, i) => `<div class="seg-row">
+      <label class="f">از ساعت<input type="text" dir="ltr" size="6" data-sg="${i}:s" value="${esc(g.s)}" inputmode="numeric"></label>
+      <label class="f">تا ساعت<input type="text" dir="ltr" size="6" data-sg="${i}:e" value="${esc(g.e)}" inputmode="numeric"></label>
+      <label class="f">شروع در<select data-sg="${i}:o"><option value="0"${!g.o ? ' selected' : ''}>همان روز</option><option value="1"${g.o === 1 ? ' selected' : ''}>روز بعد</option></select></label>
+      <button class="btn sm danger" type="button" data-act="rmseg" data-i="${i}">حذف</button></div>`).join('');
+    const refRows = (d.refs || []).map((r, i) => `<div class="seg-row">
+      <label class="f">شیفت<select data-rf="${i}:code">${simples.map((s) => `<option value="${esc(s.code)}"${r.code === s.code ? ' selected' : ''}>${esc(s.code)} — ${esc(s.name)}</option>`).join('')}</select></label>
+      <label class="f">در<select data-rf="${i}:o"><option value="0"${!r.o ? ' selected' : ''}>همان روز</option><option value="1"${r.o === 1 ? ' selected' : ''}>روز بعد</option></select></label>
+      <button class="btn sm danger" type="button" data-act="rmref" data-i="${i}">حذف</button></div>`).join('');
+    editor = `<form class="panel" id="f-shift" autocomplete="off"><h2>${d.orig ? 'ویرایش شیفت ' + esc(d.orig) : 'شیفت جدید'}</h2>
+      <div class="formgrid">
+        <label class="f">کد (۱ تا ۳ حرف انگلیسی)<input type="text" dir="ltr" maxlength="3" data-sd="code" value="${esc(d.code)}"${d.orig ? ' readonly' : ''}></label>
+        <label class="f">نام<input type="text" data-sd="name" value="${esc(d.name)}"></label>
+        <label class="f">نوع<select data-sd="kind"><option value="simple"${d.kind !== 'combo' ? ' selected' : ''}>ساده (بازهٔ زمانی)</option><option value="combo"${d.kind === 'combo' ? ' selected' : ''}>ترکیبی (از شیفت‌های ساده)</option></select></label>
+      </div>
+      ${d.kind === 'combo' ? `${refRows}<div><button class="btn sm" type="button" data-act="addref">+ افزودن شیفت به ترکیب</button></div>`
+        : `${segRows}<div><button class="btn sm" type="button" data-act="addseg">+ افزودن بازهٔ زمانی</button></div>`}
+      <div class="note">اگر ساعت پایان از شروع کمتر باشد، شیفت از نیمه‌شب می‌گذرد. بازه‌های هم‌پوشان فقط یک‌بار شمرده می‌شوند.</div>
+      <div id="sd-prev" class="note"></div><div id="f-shift-msg"></div>
+      <div class="bar"><button class="btn primary" type="submit">ذخیره</button><button class="btn" type="button" data-act="cancelshift">انصراف</button></div></form>`;
+  }
+  return `<div class="tw"><table class="t"><thead><tr><th>کد</th><th>نام</th><th>نوع</th><th>بازه‌ها</th><th class="n">مدت</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>${editor}`;
+}
+function shiftDraftPreview() {
+  const d = ui.shiftDraft, el = $('#sd-prev'); if (!d || !el) return;
+  const tmp = Object.assign({}, d, { code: d.code || 'TMP' });
+  const list = DB.cfg.shifts.filter((s) => s.code !== tmp.code).concat([tmp]);
+  const ivs = shiftIvs(list, tmp.code);
+  el.innerHTML = ivs.length ? `مدت محاسبه‌شده: ${hmH(ivsMinutes(ivs))} (${N(ivText(ivs))})` : '';
+}
+
+/* ---------- تب: تعطیلات ---------- */
+function viewHol() {
+  const S = DB.cfg.settings;
+  const sorted = DB.cfg.holidays.slice().sort((x, y) => x.jm - y.jm || x.jd - y.jd);
+  const year = ui.jy;
+  const yearList = [];
+  for (let m = 1; m <= 12; m++) for (let d = 1; d <= monthLen(year, m); d++) {
+    const j = j2d(year, m, d), info = holidayInfo(S, DB.cfg.holidays, j);
+    if (info && info.type === 'official') yearList.push({ j, name: info.name });
+  }
+  return `<div class="panel"><label class="chk"><input type="checkbox" data-set="fridayHoliday"${S.fridayHoliday ? ' checked' : ''}> جمعه‌ها تعطیل رسمی‌اند (از موظفی کم می‌شوند و ضریب تعطیلی می‌گیرند)</label>
+    <div class="note">تعطیلی از ساعت ۰۰:۰۰ بامداد تا ۲۴:۰۰ همان روز حساب می‌شود. تعطیلات ثابت شمسی از قبل ثبت شده‌اند؛ مناسبت‌های قمری (تاسوعا، عاشورا، عید فطر و…) هر سال تغییر می‌کنند و باید با تقویم رسمی همان سال اضافه شوند.</div></div>
+    <div class="split"><form class="panel" id="f-hol" autocomplete="off"><h2>افزودن تعطیلی</h2>
+      <div class="formgrid"><label class="f">ماه<select name="jm">${MONTHS.map((m, i) => `<option value="${i + 1}"${i + 1 === ui.jm ? ' selected' : ''}>${m}</option>`).join('')}</select></label>
+      <label class="f">روز<input type="number" name="jd" min="1" max="31" required></label>
+      <label class="f">نام مناسبت<input type="text" name="name" required></label></div>
+      <label class="chk"><input type="checkbox" name="every"> هر سال تکرار شود (برای مناسبت‌های ثابت شمسی)</label>
+      <label class="f" style="max-width:140px">اگر تکرار نمی‌شود، سال<input type="number" name="jy" value="${year}"></label>
+      <div class="bar"><button class="btn primary" type="submit">افزودن</button><span id="f-hol-msg"></span></div></form>
+      <div style="display:flex;flex-direction:column;gap:12px;min-width:0">
+        <h2>تعطیلات رسمی سال ${N(fa(year))} (بدون جمعه‌ها)</h2>
+        <div class="tw"><table class="t"><thead><tr><th>تاریخ</th><th>روز</th><th>مناسبت</th></tr></thead><tbody>
+        ${yearList.map((x) => `<tr><td>${N(fmtDate(x.j))}</td><td>${WD_FULL[weekdayOf(x.j)]}</td><td>${esc(x.name)}</td></tr>`).join('') || '<tr><td colspan="3">موردی نیست</td></tr>'}</tbody></table></div>
+        <h2>فهرست تعریف‌شده</h2>
+        <div class="tw"><table class="t"><thead><tr><th>تاریخ</th><th>مناسبت</th><th>تکرار</th><th></th></tr></thead><tbody>
+        ${sorted.map((h) => `<tr><td>${fa(h.jd)} ${MONTHS[h.jm - 1]}</td><td>${esc(h.name)}</td><td>${h.jy ? 'فقط ' + fa(h.jy) : 'هر سال'}</td><td><button class="btn sm danger" data-act="delhol" data-id="${esc(h.id)}">حذف</button></td></tr>`).join('')}</tbody></table></div>
+      </div></div>`;
+}
+
+/* ---------- تب: گزارش‌ها ---------- */
+function repRange() {
+  const { a, b } = monthInfo();
+  if (ui.rep.from == null) { ui.rep.from = a; ui.rep.to = b; }
+  return { from: ui.rep.from, to: ui.rep.to };
+}
+function buildReport() {
+  const { from, to } = repRange();
+  const hm = holidayMap(DB.cfg.settings, DB.cfg.holidays, from, to);
+  let ps = sortedPeople();
+  if (ui.rep.dept === 'none') ps = ps.filter((p) => !dept(p.deptId));
+  else if (ui.rep.dept !== 'all') ps = ps.filter((p) => p.deptId === ui.rep.dept);
+  const rows = ps.map((p) => ({ p, r: computeRange(dbv(), p, from, to, hm) }));
+  const used = new Set();
+  rows.forEach((x) => Object.keys(x.r.counts).forEach((k) => used.add(k)));
+  const shiftCols = DB.cfg.shifts.map((s) => s.code).filter((c) => used.has(c));
+  const spCols = Object.keys(SPECIAL).filter((c) => used.has(c));
+  return { from, to, rows, shiftCols, spCols, hm };
+}
+function viewRep() {
+  const R = buildReport();
+  const cap = DB.cfg.settings.otCapH * 60;
+  const days = R.to - R.from + 1;
+  const tot = { duty: 0, actual: 0, weighted: 0, credit: 0, overtime: 0 };
+  R.rows.forEach((x) => { for (const k in tot) tot[k] += x.r[k]; });
+  const head = `<th>کد</th><th>نام</th><th>بخش</th><th>قرارداد</th><th class="n">موظفی</th><th class="n">کارکرد واقعی</th><th class="n">با ضریب</th><th class="n">اعتبار مرخصی</th><th class="n">اضافه / کسر</th>
+    ${R.shiftCols.map((c) => `<th class="n">${esc(c)}</th>`).join('')}${R.spCols.map((c) => `<th class="n">${SPECIAL[c].name}</th>`).join('')}`;
+  const body = R.rows.map(({ p, r }) => `<tr><td>${esc(p.code || '—')}</td><td>${esc(pname(p))}</td><td>${dept(p.deptId) ? `<span class="dot" style="--dc:${esc(dept(p.deptId).color)}"></span>${esc(dept(p.deptId).name)}` : '—'}</td><td>${CONTRACTS[p.contract] || ''}</td>
+    <td class="n">${hmH(r.duty)}</td><td class="n">${hmH(r.actual)}</td><td class="n">${hmH(r.weighted)}</td><td class="n">${hmH(r.credit)}</td>
+    <td class="n" style="${r.overtime < 0 ? 'color:var(--hol-ink)' : cap > 0 && r.overtime > cap ? 'color:var(--warn);font-weight:700' : ''}">${hmH(r.overtime)}</td>
+    ${R.shiftCols.map((c) => `<td class="n">${r.counts[c] ? fa(r.counts[c]) : '·'}</td>`).join('')}${R.spCols.map((c) => `<td class="n">${r.counts[c] ? fa(r.counts[c]) : '·'}</td>`).join('')}</tr>`).join('');
+  const foot = `<tr><td colspan="4">جمع</td><td class="n">${hmH(tot.duty)}</td><td class="n">${hmH(tot.actual)}</td><td class="n">${hmH(tot.weighted)}</td><td class="n">${hmH(tot.credit)}</td><td class="n">${hmH(tot.overtime)}</td><td colspan="${R.shiftCols.length + R.spCols.length}"></td></tr>`;
+  // جمع‌بندی بخش‌ها
+  const groups = {};
+  R.rows.forEach(({ p, r }) => {
+    const k = dept(p.deptId) ? p.deptId : '';
+    const g = (groups[k] = groups[k] || { n: 0, duty: 0, actual: 0, weighted: 0, overtime: 0, counts: {} });
+    g.n++; g.duty += r.duty; g.actual += r.actual; g.weighted += r.weighted; g.overtime += r.overtime;
+    for (const c in r.counts) g.counts[c] = (g.counts[c] || 0) + r.counts[c];
+  });
+  const gRows = Object.keys(groups).map((k) => {
+    const g = groups[k], d = dept(k);
+    return `<tr><td>${d ? `<span class="dot" style="--dc:${esc(d.color)}"></span>${esc(d.name)}` : 'بدون بخش'}</td><td class="n">${N(fa(g.n))}</td><td class="n">${hmH(g.actual)}</td><td class="n">${hmH(g.weighted)}</td><td class="n">${hmH(g.overtime)}</td>
+      ${R.shiftCols.map((c) => `<td class="n">${g.counts[c] ? fa(g.counts[c]) : '·'}</td>`).join('')}</tr>`;
+  }).join('');
+  return `<div class="panel"><div class="bar">
+      <label class="f">از تاریخ<input type="text" id="rep-from" dir="ltr" size="11" value="${fmtDateLatin(R.from)}"></label>
+      <label class="f">تا تاریخ<input type="text" id="rep-to" dir="ltr" size="11" value="${fmtDateLatin(R.to)}"></label>
+      <label class="f">بخش${deptSelect('rep-dept', ui.rep.dept, true)}</label>
+      <button class="btn primary" data-act="repgo" style="align-self:flex-end">نمایش</button>
+      <span class="sp"></span>
+      <button class="btn sm" data-act="repmonth" style="align-self:flex-end">ماهِ انتخاب‌شده</button>
+      <button class="btn sm" data-act="repweek" style="align-self:flex-end">هفتهٔ جاری</button>
+      <button class="btn sm" data-act="reptoday" style="align-self:flex-end">امروز</button>
+      <button class="btn" data-act="repcsv" style="align-self:flex-end">خروجی CSV (برای Excel)</button></div>
+    <div class="note">بازه: ${N(fmtDate(R.from))} تا ${N(fmtDate(R.to))} (${N(fa(days))} روز). موظفی هر نفر برای این بازه: ${hmH((days - Object.values(R.hm).filter(Boolean).length) * DB.cfg.settings.dutyMin)}.
+    تاریخ را به شکل ۱۴۰۵/۰۷/۲۵ بنویسید.</div><div id="rep-msg"></div></div>
+    ${R.rows.length ? `<div class="tw"><table class="t"><thead><tr>${head}</tr></thead><tbody>${body}</tbody><tfoot>${foot}</tfoot></table></div>
+      <h2>برنامهٔ کلی بخش‌ها</h2>
+      <div class="tw"><table class="t"><thead><tr><th>بخش</th><th class="n">نفر</th><th class="n">کارکرد واقعی</th><th class="n">با ضریب</th><th class="n">اضافه / کسر</th>${R.shiftCols.map((c) => `<th class="n">تعداد ${esc(c)}</th>`).join('')}</tr></thead><tbody>${gRows}</tbody></table></div>`
+      : '<div class="panel empty"><b>پرسنلی برای گزارش نیست</b></div>'}`;
+}
+function csvText() {
+  const R = buildReport();
+  const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const h = ['کد پرسنلی', 'نام', 'بخش', 'قرارداد', 'موظفی', 'کارکرد واقعی', 'کارکرد با ضریب', 'اعتبار مرخصی', 'اضافه/کسر', 'اضافه/کسر (ساعت اعشاری)']
+    .concat(R.shiftCols.map((c) => 'تعداد ' + c)).concat(R.spCols.map((c) => SPECIAL[c].name));
+  const lines = [h.map(q).join(',')];
+  R.rows.forEach(({ p, r }) => {
+    lines.push([p.code || '', pname(p), (dept(p.deptId) || {}).name || '', CONTRACTS[p.contract] || '', fmtHMlatin(r.duty), fmtHMlatin(r.actual), fmtHMlatin(r.weighted), fmtHMlatin(r.credit), fmtHMlatin(r.overtime), (r.overtime / 60).toFixed(2)]
+      .concat(R.shiftCols.map((c) => r.counts[c] || 0)).concat(R.spCols.map((c) => r.counts[c] || 0)).map(q).join(','));
+  });
+  return { name: `report-${fmtDateLatin(R.from).replace(/\//g, '')}-${fmtDateLatin(R.to).replace(/\//g, '')}.csv`, text: '﻿' + lines.join('\r\n') };
+}
+
+/* ---------- تب: تنظیمات و پشتیبان ---------- */
+function viewSet() {
+  const S = DB.cfg.settings;
+  const logRows = DB.log.slice(0, 100).map((l) => {
+    const d = new Date(l.t);
+    const j = d2j(Core.g2d(d.getFullYear(), d.getMonth() + 1, d.getDate()));
+    return `<tr><td>${N(fa(j.jy + '/' + pad2(j.jm) + '/' + pad2(j.jd) + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes())))}</td><td>${esc(l.x)}</td></tr>`;
+  }).join('');
+  return `<div class="panel"><h2>قواعد محاسبه</h2><div class="formgrid">
+      <label class="f">موظفی هر روز کاری (ساعت:دقیقه)<input type="text" dir="ltr" data-set="dutyMin" value="${fmtHMlatin(S.dutyMin).replace(/^(\d):/, '0$1:')}"></label>
+      <label class="f">ضریب تعطیلی — شرکتی<input type="number" step="0.05" min="1" data-set="f:company" value="${S.factors.company}"></label>
+      <label class="f">ضریب تعطیلی — تبصره ۴<input type="number" step="0.05" min="1" data-set="f:t4" value="${S.factors.t4}"></label>
+      <label class="f">ضریب تعطیلی — رسمی<input type="number" step="0.05" min="1" data-set="f:official" value="${S.factors.official}"></label>
+      <label class="f">حداقل استراحت بین دو شیفت (ساعت)<input type="number" min="0" max="48" data-set="minRestH" value="${S.minRestH}"></label>
+      <label class="f">سقف هشدار اضافه‌کار ماهانه (ساعت، ۰ = بدون هشدار)<input type="number" min="0" data-set="otCapH" value="${S.otCapH}"></label></div>
+      <div class="note">مرخصی استحقاقی و استعلاجی در روزهای کاری معادل یک روز موظفی اعتبار می‌گیرند؛ در روزهای تعطیل اعتبار ندارند. مرخصی بدون حقوق، استراحت و غیبت اعتبار ندارند.</div></div>
+    <div class="panel"><h2>پشتیبان‌گیری</h2>
+      <div class="bar"><button class="btn" data-act="backup">ذخیرهٔ فایل پشتیبان (JSON)</button>
+      <label class="btn" style="display:inline-flex;align-items:center;cursor:pointer">بازیابی از فایل<input type="file" id="restore-file" accept=".json,application/json" hidden></label></div>
+      <div class="note">${Store.mode === 'db' ? 'اطلاعات در فضای ذخیرهٔ همین برنامه نگه‌داری می‌شود. با این حال گاهی فایل پشتیبان بگیرید.' : 'ذخیرهٔ دائمی در این نما در دسترس نیست و اطلاعات فقط در همین مرورگر می‌ماند. حتماً فایل پشتیبان بگیرید.'}</div>
+      <div id="set-msg"></div></div>
+    <div class="panel"><h2>گزارش تغییرات</h2>${logRows ? `<div class="tw" style="max-height:340px;overflow:auto"><table class="t"><thead><tr><th>زمان</th><th>تغییر</th></tr></thead><tbody>${logRows}</tbody></table></div>` : '<div class="note">هنوز تغییری ثبت نشده است.</div>'}</div>
+    <div class="panel"><h2>پاک‌سازی کامل</h2><div class="bar"><button class="btn danger" data-act="resetall" data-confirm="همهٔ داده‌ها پاک شود؟">حذف همهٔ اطلاعات</button></div></div>`;
+}
+
+/* ---------- رندر اصلی ---------- */
+const TABS = [['sched', 'برنامه شیفت'], ['pcal', 'تقویم فرد'], ['people', 'پرسنل'], ['depts', 'بخش‌ها'], ['shifts', 'شیفت‌ها'], ['hol', 'تعطیلات'], ['rep', 'گزارش‌ها'], ['set', 'تنظیمات و پشتیبان']];
+let renderTok = 0;
+async function render() {
+  const app = $('#app');
+  if (!DB.cfg) { app.innerHTML = '<div class="panel empty"><b>در حال بارگذاری…</b></div>'; return; }
+  const tok = ++renderTok;
+  const { a, b } = monthInfo();
+  if (ui.tab === 'sched' || ui.tab === 'pcal') await Store.ensureRange(a, b);
+  if (ui.tab === 'rep') { const r = repRange(); await Store.ensureRange(r.from, r.to); }
+  if (tok !== renderTok) return;
+  const views = { sched: viewSched, pcal: viewPcal, people: viewPeople, depts: viewDepts, shifts: viewShifts, hol: viewHol, rep: viewRep, set: viewSet };
+  app.innerHTML = `<div class="wrap">
+    <div class="top"><div class="brand"><h1>شیفت‌یار</h1><small>برنامه‌ریز شیفت پرسنل</small></div>
+      <span id="savestate" class="save ${Store.status}"><i></i><span>${esc(Store.statusText())}</span></span></div>
+    <nav class="tabs" role="tablist">${TABS.map(([k, l]) => `<button role="tab" aria-selected="${ui.tab === k}" data-tab="${k}">${l}</button>`).join('')}</nav>
+    <div id="flash" aria-live="polite"></div>
+    <main id="main" style="display:flex;flex-direction:column;gap:12px">${views[ui.tab]()}</main></div>`;
+  if (ui.tab === 'shifts') shiftDraftPreview();
+}
+function flash(msg, ok, where) {
+  const el = $(where || '#flash'); if (!el) return;
+  el.innerHTML = `<div class="msg${ok ? ' ok' : ''}">${esc(msg)}</div>`;
+  clearTimeout(flash.t); flash.t = setTimeout(() => { if (el) el.innerHTML = ''; }, 5000);
+}
+function showText(title, text) {
+  const main = $('#main'); if (!main) return;
+  const old = $('#textbox'); if (old) old.remove();
+  const d = document.createElement('div');
+  d.className = 'panel'; d.id = 'textbox';
+  d.innerHTML = `<h2>${esc(title)}</h2><textarea readonly id="textbox-area"></textarea><div class="note">متن را انتخاب و کپی کنید.</div>`;
+  main.appendChild(d);
+  const ta = $('#textbox-area'); ta.value = text; ta.focus(); ta.select();
+}
+async function saveFile(filename, data, label) {
+  if (Store.dl) {
+    try { await Store.dl.save({ filename, data }); return true; }
+    catch (e) { if (e && e.code === 'declined') return false; }
+  }
+  showText(label || filename, typeof data === 'string' ? data : '');
+  return false;
+}
+
+/* ---------- رنگ‌آمیزی با ماوس/لمس ---------- */
+let painting = false, stroke = null, strokeFirst = true;
+function applyBrush(td) {
+  const pid = td.dataset.pid, j = +td.dataset.j;
+  const old = (DB.assign[pid] || {})[j];
+  let nw = ui.brush === 'ERASE' ? undefined : ui.brush;
+  if (strokeFirst && old === nw) nw = undefined; // کلیک دوباره = پاک کردن
+  strokeFirst = false;
+  if (setAssign(pid, j, nw, stroke)) { if (ui.tab === 'pcal') refreshPcal(); else refreshRow(pid); }
+}
+document.addEventListener('pointerdown', (e) => {
+  if (e.button > 0) return;
+  const td = e.target.closest('.cell[data-pid]');
+  if (!td || !(ui.tab === 'sched' || ui.tab === 'pcal')) return;
+  painting = true; stroke = []; strokeFirst = true;
+  applyBrush(td);
+  e.preventDefault();
+});
+document.addEventListener('pointerover', (e) => {
+  if (!painting) return;
+  const td = e.target.closest('.cell[data-pid]');
+  if (td) applyBrush(td);
+});
+function endStroke() { if (!painting) return; painting = false; finishStroke(stroke, ui.brush === 'ERASE' ? 'پاک‌کردن' : codeLabel(ui.brush)); stroke = null; }
+document.addEventListener('pointerup', endStroke);
+document.addEventListener('pointercancel', endStroke);
+document.addEventListener('keydown', (e) => {
+  const td = e.target.closest && e.target.closest('.cell[data-pid]');
+  if (!td) return;
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault(); stroke = []; strokeFirst = true; const pid = td.dataset.pid, j = td.dataset.j;
+    applyBrush(td); finishStroke(stroke, codeLabel(ui.brush)); stroke = null;
+    const again = $(`.cell[data-pid="${pid}"][data-j="${j}"]`); if (again) again.focus();
+    return;
+  }
+  const dir = { ArrowLeft: [1, 0], ArrowRight: [-1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+  if (!dir) return;
+  e.preventDefault();
+  const pid = td.dataset.pid, j = +td.dataset.j;
+  let next = null;
+  if (ui.tab === 'pcal') next = $(`.cell[data-j="${j + dir[0] + dir[1] * 7}"]`);
+  else if (dir[0]) next = $(`.cell[data-pid="${pid}"][data-j="${j + dir[0]}"]`);
+  else { const tr = td.closest('tr'); let r = tr; do { r = dir[1] > 0 ? r.nextElementSibling : r.previousElementSibling; } while (r && r.classList.contains('grp')); if (r) next = $(`.cell[data-pid="${r.dataset.pid}"][data-j="${j}"]`); }
+  if (next) { $$('.cell[tabindex="0"]').forEach((c) => c.setAttribute('tabindex', '-1')); next.setAttribute('tabindex', '0'); next.focus(); }
+});
+
+/* ---------- کلیک‌ها ---------- */
+async function copyPattern(src) {
+  const { a, b } = monthInfo();
+  const ps = visiblePeople();
+  if (src === 'pm') {
+    const pm = ui.jm === 1 ? { jy: ui.jy - 1, jm: 12 } : { jy: ui.jy, jm: ui.jm - 1 };
+    await Store.ensureMonth(pm.jy, pm.jm);
+  } else await Store.ensureRange(a - +src, a);
+  const st = [];
+  for (const p of ps) {
+    for (let j = a; j <= b; j++) {
+      let from;
+      if (src === 'pm') { const d = d2j(j); const dd = d.jd; from = dd <= monthLen(ui.jm === 1 ? ui.jy - 1 : ui.jy, ui.jm === 1 ? 12 : ui.jm - 1) ? j2d(ui.jm === 1 ? ui.jy - 1 : ui.jy, ui.jm === 1 ? 12 : ui.jm - 1, dd) : null; }
+      else from = j - +src;
+      if (from == null) continue;
+      const code = (DB.assign[p.id] || {})[from];
+      if (code) setAssign(p.id, j, code, st);
+    }
+  }
+  finishStroke(st, 'کپی الگو');
+  if (!st.length) flash('چیزی برای کپی پیدا نشد؛ مبدأ خالی است یا تغییری لازم نبود.', false);
+}
+document.addEventListener('click', async (e) => {
+  const t = e.target.closest('[data-act],[data-tab],[data-brush]');
+  if (!t) return;
+  if (t.dataset.brush) {
+    ui.brush = t.dataset.brush;
+    $$('[data-brush]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.brush === ui.brush)));
+    return;
+  }
+  if (t.dataset.tab) { ui.tab = t.dataset.tab; ui.shiftDraft = null; await render(); window.scrollTo(0, 0); return; }
+  if (t.dataset.confirm && !t.classList.contains('arm')) {
+    t.classList.add('arm'); t.dataset.orig = t.textContent; t.textContent = t.dataset.confirm;
+    setTimeout(() => { if (t.isConnected && t.classList.contains('arm')) { t.classList.remove('arm'); t.textContent = t.dataset.orig; } }, 4500);
+    return;
+  }
+  const act = t.dataset.act, id = t.dataset.id;
+  const cfg = DB.cfg;
+  switch (act) {
+    case 'mprev': ui.jm--; if (ui.jm < 1) { ui.jm = 12; ui.jy--; } ui.rep.from = null; ui.undo = []; return render();
+    case 'mnext': ui.jm++; if (ui.jm > 12) { ui.jm = 1; ui.jy++; } ui.rep.from = null; ui.undo = []; return render();
+    case 'mtoday': { const d = d2j(todayJdn()); ui.jy = d.jy; ui.jm = d.jm; ui.rep.from = null; ui.undo = []; return render(); }
+    case 'undo': {
+      const st = ui.undo.pop(); if (!st) return;
+      const pids = new Set();
+      for (let i = st.length - 1; i >= 0; i--) { setAssign(st[i].pid, st[i].j, st[i].old); pids.add(st[i].pid); }
+      logEv(`بازگردانی ${fa(st.length)} خانه`);
+      return render();
+    }
+    case 'copypat': { await copyPattern($('#copy-src').value); return render(); }
+    case 'clearmonth': {
+      const { a, b } = monthInfo(); const st = [];
+      for (const p of visiblePeople()) for (let j = a; j <= b; j++) setAssign(p.id, j, undefined, st);
+      finishStroke(st, 'پاک‌کردن ماه'); return render();
+    }
+    case 'clearsample': {
+      await Store.replaceAll(Object.assign(normalizeCfg(cfg), { people: [], depts: [], sample: false }), {}, []);
+      ui.undo = []; return render();
+    }
+    /* پرسنل */
+    case 'editperson': ui.editPerson = id; return render();
+    case 'cancelperson': ui.editPerson = null; return render();
+    case 'delperson': {
+      const mine = DB.assign[id] || {}; const p = person(id);
+      cfg.people = cfg.people.filter((x) => x.id !== id);
+      Object.keys(mine).forEach((j) => Store.touchMonth(+j));
+      delete DB.assign[id];
+      Store.touchCfg(); logEv(`حذف پرسنل: ${p ? pname(p) : ''}`); return render();
+    }
+    /* بخش‌ها */
+    case 'deldept': {
+      const d = dept(id); cfg.depts = cfg.depts.filter((x) => x.id !== id);
+      cfg.people.forEach((p) => { if (p.deptId === id) p.deptId = ''; });
+      if (ui.dept === id) ui.dept = 'all';
+      Store.touchCfg(); logEv(`حذف بخش: ${d ? d.name : ''}`); return render();
+    }
+    /* شیفت‌ها */
+    case 'newshift': ui.shiftDraft = { orig: null, code: '', name: '', kind: 'simple', segs: [{ o: 0, s: '08:00', e: '14:00' }], refs: [] }; return render();
+    case 'editshift': { const s = shiftOf(id); ui.shiftDraft = JSON.parse(JSON.stringify(Object.assign({ segs: [], refs: [] }, s, { orig: s.code }))); if (!ui.shiftDraft.segs.length && s.kind !== 'combo') ui.shiftDraft.segs.push({ o: 0, s: '08:00', e: '14:00' }); return render(); }
+    case 'cancelshift': ui.shiftDraft = null; return render();
+    case 'addseg': ui.shiftDraft.segs.push({ o: 0, s: '08:00', e: '14:00' }); return render();
+    case 'rmseg': ui.shiftDraft.segs.splice(+t.dataset.i, 1); return render();
+    case 'addref': { const first = cfg.shifts.find((s) => s.kind !== 'combo' && s.code !== ui.shiftDraft.orig); ui.shiftDraft.refs.push({ code: first ? first.code : '', o: 0 }); return render(); }
+    case 'rmref': ui.shiftDraft.refs.splice(+t.dataset.i, 1); return render();
+    case 'delshift': {
+      let used = 0; for (const pid in DB.assign) for (const j in DB.assign[pid]) if (DB.assign[pid][j] === id) used++;
+      const inCombo = cfg.shifts.some((s) => s.kind === 'combo' && (s.refs || []).some((r) => r.code === id));
+      if (used || inCombo) { flash(used ? `این شیفت ${fa(used)} بار در برنامه‌ها استفاده شده و حذف نمی‌شود.` : 'این شیفت در یک شیفت ترکیبی استفاده شده است.', false); return; }
+      cfg.shifts = cfg.shifts.filter((s) => s.code !== id); if (ui.brush === id) ui.brush = 'ERASE';
+      Store.touchCfg(); logEv(`حذف شیفت ${id}`); return render();
+    }
+    /* تعطیلات */
+    case 'delhol': cfg.holidays = cfg.holidays.filter((h) => h.id !== id); Store.touchCfg(); logEv('حذف یک تعطیلی'); return render();
+    /* گزارش */
+    case 'repgo': {
+      const f = parseDate($('#rep-from').value), to = parseDate($('#rep-to').value);
+      if (f == null || to == null) return flash('تاریخ را به شکل ۱۴۰۵/۰۷/۲۵ بنویسید.', false, '#rep-msg');
+      if (to < f) return flash('تاریخ پایان باید بعد از شروع باشد.', false, '#rep-msg');
+      if (to - f > 400) return flash('بازه حداکثر ۴۰۰ روز می‌تواند باشد.', false, '#rep-msg');
+      ui.rep.from = f; ui.rep.to = to; ui.rep.dept = $('#rep-dept').value; return render();
+    }
+    case 'repmonth': { const m = monthInfo(); ui.rep.from = m.a; ui.rep.to = m.b; ui.rep.dept = $('#rep-dept').value; return render(); }
+    case 'repweek': { const T = todayJdn(), s = T - weekdayOf(T); ui.rep.from = s; ui.rep.to = s + 6; ui.rep.dept = $('#rep-dept').value; return render(); }
+    case 'reptoday': { const T = todayJdn(); ui.rep.from = T; ui.rep.to = T; ui.rep.dept = $('#rep-dept').value; return render(); }
+    case 'repcsv': { ui.rep.dept = $('#rep-dept').value; const c = csvText(); const ok = await saveFile(c.name, c.text, 'متن CSV'); if (ok) flash('فایل ذخیره شد.', true, '#rep-msg'); return; }
+    /* تنظیمات */
+    case 'backup': {
+      await Store.loadAll();
+      const data = JSON.stringify({ app: 'shiftyar', v: 1, cfg: DB.cfg, assign: DB.assign, log: DB.log });
+      const ok = await saveFile('shiftyar-backup-' + fmtDateLatin(todayJdn()).replace(/\//g, '') + '.json', data, 'متن پشتیبان');
+      if (ok) flash('فایل پشتیبان ذخیره شد.', true, '#set-msg'); return;
+    }
+    case 'resetall': {
+      await Store.replaceAll(defaultCfg(), {}, []); ui.undo = []; ui.editPerson = null; ui.dept = 'all'; return render();
+    }
+  }
+});
+
+/* ---------- فرم‌ها ---------- */
+document.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const f = e.target, fd = new FormData(f), cfg = DB.cfg;
+  if (f.id === 'f-person') {
+    const rec = { first: (fd.get('first') || '').trim(), last: (fd.get('last') || '').trim(), code: toLatin((fd.get('code') || '').trim()), phone: toLatin((fd.get('phone') || '').trim()), contract: fd.get('contract'), deptId: fd.get('deptId') || '' };
+    if (!rec.first && !rec.last) return flash('نام را بنویسید.', false, '#f-person-msg');
+    if (rec.code && cfg.people.some((p) => p.code === rec.code && p.id !== ui.editPerson)) return flash('این کد پرسنلی قبلاً ثبت شده است.', false, '#f-person-msg');
+    if (ui.editPerson) { Object.assign(person(ui.editPerson), rec); logEv('ویرایش پرسنل: ' + pname(rec)); }
+    else { cfg.people.push(Object.assign({ id: uid('p') }, rec)); logEv('افزودن پرسنل: ' + pname(rec)); }
+    ui.editPerson = null; Store.touchCfg(); render();
+  } else if (f.id === 'f-dept') {
+    const name = (fd.get('name') || '').trim(); if (!name) return;
+    cfg.depts.push({ id: uid('d'), name, color: fd.get('color') }); Store.touchCfg(); logEv('افزودن بخش: ' + name); render();
+  } else if (f.id === 'f-hol') {
+    const jm = +fd.get('jm'), jd = +fd.get('jd'), name = (fd.get('name') || '').trim(), every = fd.get('every') === 'on', jy = +fd.get('jy');
+    if (!name || !(jd >= 1 && jd <= 31)) return flash('روز و نام مناسبت را بنویسید.', false, '#f-hol-msg');
+    if (!every && !(jy >= 1300)) return flash('سال را بنویسید.', false, '#f-hol-msg');
+    cfg.holidays.push({ id: uid('h'), jy: every ? null : jy, jm, jd, name }); Store.touchCfg(); logEv(`افزودن تعطیلی: ${fa(jd)} ${MONTHS[jm - 1]} ${name}`); render();
+  } else if (f.id === 'f-shift') {
+    const d = ui.shiftDraft; d.code = d.code.trim();
+    const err = validateShift(d, cfg.shifts, !d.orig);
+    if (err) return flash(err, false, '#f-shift-msg');
+    const rec = d.kind === 'combo' ? { code: d.code, name: d.name.trim(), kind: 'combo', refs: d.refs.map((r) => ({ code: r.code, o: +r.o || 0 })) }
+      : { code: d.code, name: d.name.trim(), kind: 'simple', segs: d.segs.map((g) => ({ o: +g.o || 0, s: toLatin(g.s).padStart(5, '0'), e: toLatin(g.e).padStart(5, '0') })) };
+    if (d.orig) cfg.shifts[cfg.shifts.findIndex((s) => s.code === d.orig)] = rec; else cfg.shifts.push(rec);
+    ui.shiftDraft = null; Store.touchCfg(); logEv('ذخیرهٔ شیفت ' + rec.code); render();
+  }
+});
+
+/* ---------- تغییر فیلدها ---------- */
+document.addEventListener('change', async (e) => {
+  const t = e.target, cfg = DB.cfg;
+  if (t.id === 'f-dept') { ui.dept = t.value; return render(); }
+  if (t.id === 'pcal-person') { ui.pcalPerson = t.value; return refreshPcal(); }
+  if (t.dataset.dcolor) { const d = dept(t.dataset.dcolor); if (d) { d.color = t.value; Store.touchCfg(); } return; }
+  if (t.dataset.dname) { const d = dept(t.dataset.dname); if (d && t.value.trim()) { d.name = t.value.trim(); Store.touchCfg(); } return; }
+  if (t.dataset.set) {
+    const S = cfg.settings, k = t.dataset.set;
+    if (k === 'fridayHoliday') S.fridayHoliday = t.checked;
+    else if (k === 'dutyMin') { const v = toMin(t.value); if (v > 0 && v <= 1440) S.dutyMin = v; }
+    else if (k.startsWith('f:')) S.factors[k.slice(2)] = Math.max(1, parseFloat(toLatin(t.value)) || 1);
+    else S[k] = Math.max(0, parseFloat(toLatin(t.value)) || 0);
+    Store.touchCfg(); logEv('تغییر تنظیمات: ' + k);
+    if (ui.tab === 'hol') render();
+    return;
+  }
+  if (t.dataset.sd) {
+    const d = ui.shiftDraft; d[t.dataset.sd] = t.value;
+    if (t.dataset.sd === 'kind') { if (d.kind === 'combo' && !d.refs.length) { const first = cfg.shifts.find((s) => s.kind !== 'combo' && s.code !== d.orig); d.refs.push({ code: first ? first.code : '', o: 0 }); } if (d.kind === 'simple' && !d.segs.length) d.segs.push({ o: 0, s: '08:00', e: '14:00' }); return render(); }
+    return shiftDraftPreview();
+  }
+  if (t.dataset.sg) { const [i, k] = t.dataset.sg.split(':'); ui.shiftDraft.segs[+i][k] = k === 'o' ? +t.value : t.value; return shiftDraftPreview(); }
+  if (t.dataset.rf) { const [i, k] = t.dataset.rf.split(':'); ui.shiftDraft.refs[+i][k] = k === 'o' ? +t.value : t.value; return shiftDraftPreview(); }
+  if (t.id === 'restore-file' && t.files && t.files[0]) {
+    try {
+      const o = JSON.parse(await t.files[0].text());
+      if (!o || o.app !== 'shiftyar' || !o.cfg) throw new Error('فایل پشتیبان شیفت‌یار نیست.');
+      await Store.replaceAll(normalizeCfg(o.cfg), o.assign || {}, o.log || []);
+      ui.undo = []; ui.editPerson = null; await render(); flash('اطلاعات بازیابی شد.', true);
+    } catch (err) { flash('بازیابی نشد: ' + err.message, false, '#set-msg'); }
+  }
+});
+document.addEventListener('input', (e) => {
+  const t = e.target;
+  if (t.dataset.sd === 'code' || t.dataset.sd === 'name') { ui.shiftDraft[t.dataset.sd] = t.value; }
+});
+
+/* ---------- شروع ---------- */
+(async function start() {
+  const d = d2j(todayJdn()); ui.jy = d.jy; ui.jm = d.jm;
+  await render();
+  await Store.init();
+  await render();
+})();
