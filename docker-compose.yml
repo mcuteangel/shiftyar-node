@@ -1,0 +1,18 @@
+services:
+  shiftyar:
+    build: .
+    restart: unless-stopped
+    ports:
+      # فقط روی خود سرور باز می‌شود؛ دسترسی بیرونی را با Caddy/Nginx و HTTPS بدهید
+      - "127.0.0.1:3000:3000"
+    environment:
+      # پشت پروکسی HTTPS هستید؟ این دو را فعال کنید
+      COOKIE_SECURE: "1"
+      TRUST_PROXY: "1"
+      # (اختیاری) کد و گذرواژهٔ مدیر اولیه؛ اگر نگذارید، گذرواژهٔ موقت در لاگ چاپ می‌شود
+      # ADMIN_CODE: "admin"
+      # ADMIN_PASSWORD: "یک-گذرواژهٔ-قوی-حداقل-۸-نویسه"
+    volumes:
+      - shiftyar-data:/data
+volumes:
+  shiftyar-data:

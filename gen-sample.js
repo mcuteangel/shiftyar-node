@@ -1,4 +1,4 @@
-const C = require('./core.js');
+const C = require('./web/core.js');
 const depts = [
   { id: 'dsamp1', name: 'اورژانس', color: '#e0573f' },
   { id: 'dsamp2', name: 'داخلی', color: '#2f7dd1' },

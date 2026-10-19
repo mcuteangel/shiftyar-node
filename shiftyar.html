@@ -118,29 +118,29 @@ label.chk { display: inline-flex; align-items: center; gap: 7px; cursor: pointer
 .rwrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); max-height: 72vh; }
 table.roster { border-collapse: separate; border-spacing: 0; font-size: 12px; }
 table.roster th, table.roster td { border-bottom: 1px solid var(--line); border-left: 1px solid var(--line); text-align: center; padding: 0; }
-table.roster thead th { position: sticky; top: 0; z-index: 3; background: var(--surface2); height: 40px; min-width: 36px; font-weight: 500; }
+table.roster thead th { position: sticky; top: 0; z-index: 3; background: var(--surface2); height: 40px; min-width: 30px; font-weight: 500; }
 table.roster thead th small { display: block; font-size: 10px; line-height: 1; }
 table.roster thead th.hol, table.roster td.hol { background: var(--hol); }
 table.roster thead th.hol { color: var(--hol-ink); }
 table.roster thead th.today { box-shadow: inset 0 -3px 0 var(--today); font-weight: 700; }
 table.roster .nm {
-  position: sticky; right: 0; z-index: 2; background: var(--surface); text-align: right; min-width: 168px; max-width: 200px;
+  position: sticky; right: 0; z-index: 2; background: var(--surface); text-align: right; min-width: 150px; max-width: 170px;
   padding: 3px 12px 3px 8px; border-left: 2px solid var(--line);
 }
 table.roster thead .nm { z-index: 4; background: var(--surface2); }
 table.roster .nm { border-right: 6px solid var(--dc, var(--line)); }
 table.roster .nm b { display: block; font-weight: 600; font-size: 13px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 table.roster .nm small { font-size: 11px; line-height: 1.2; display: block; }
-table.roster td.cell { width: 36px; min-width: 36px; height: 40px; cursor: pointer; user-select: none; -webkit-user-select: none; }
+table.roster td.cell { width: 30px; min-width: 30px; height: 40px; cursor: pointer; user-select: none; -webkit-user-select: none; }
 table.roster td.cell:hover { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 table.roster td.cell.hol:hover { background: color-mix(in srgb, var(--accent) 12%, var(--hol)); }
-table.roster td.sum { min-width: 74px; padding: 0 8px; white-space: nowrap; background: var(--surface); }
-table.roster thead th.sum { min-width: 74px; padding: 0 8px; white-space: nowrap; }
+table.roster td.sum { min-width: 62px; padding: 0 6px; white-space: nowrap; background: var(--surface); }
+table.roster thead th.sum { min-width: 62px; padding: 0 6px; white-space: nowrap; font-size: 11px; }
 table.roster td.sum.ot.neg { color: var(--hol-ink); }
 table.roster td.sum.ot.pos { color: var(--ok); font-weight: 700; }
 table.roster tr.grp td { background: var(--surface2); text-align: right; padding: 2px 12px; font-weight: 700; font-size: 12px; position: sticky; right: 0; border-right: 6px solid var(--dc, var(--line)); }
 .c {
-  display: flex; align-items: center; justify-content: center; width: 30px; height: 28px; margin: auto; border-radius: 5px;
+  display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; margin: auto; border-radius: 5px;
   font-size: 12px; font-weight: 700; line-height: 1; direction: ltr;
   background: color-mix(in srgb, var(--dc, var(--accent)) 26%, var(--surface));
   border: 1px solid color-mix(in srgb, var(--dc, var(--accent)) 75%, var(--surface));
@@ -190,6 +190,18 @@ details.warns ul { margin: 8px 0 0; padding-inline-start: 20px; display: flex; f
 .split { display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr); gap: 14px; align-items: start; }
 @media (max-width: 760px) { .split { grid-template-columns: minmax(0, 1fr); } .brand h1 { font-size: 24px; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* حالت سرور */
+.pc-day.ro { cursor: default; }
+.pc-day.ro:hover { border-color: var(--line); }
+.who { white-space: nowrap; }
+fieldset { min-width: 0; }
+#u-notice b { font-weight: 700; }
+
+/* ستون اضافه/کسر همیشه دیده شود، حتی وقتی جدول افقی اسکرول می‌شود */
+table.roster td.sum.ot, table.roster thead th.sum:last-child { position: sticky; left: 0; z-index: 2; border-right: 2px solid var(--line); background: var(--surface); }
+table.roster thead th.sum:last-child { z-index: 4; background: var(--surface2); }
+table.roster { width: 100%; }
 
 </style>
 <div id="app"></div>
@@ -528,6 +540,14 @@ const N = (t) => `<span class="num">${t}</span>`;
 const hmH = (min) => N(fmtHM(min));
 const NO_COLOR = '#8a94a6';
 
+/* ---------- کاربر و نقش (فقط در حالت سرور) ---------- */
+const ME = { user: null };
+const ROLE_NAMES = { admin: 'مدیر سیستم', manager: 'مدیر بخش', staff: 'پرسنل' };
+const isServer = () => Store.mode === 'server';
+const role = () => (isServer() && ME.user ? ME.user.role : 'admin');
+const canConfig = () => role() === 'admin';
+const canEdit = () => role() !== 'staff';
+
 /* ---------- داده ---------- */
 const DB = { cfg: null, assign: {}, log: [] };
 const ui = {
@@ -566,6 +586,63 @@ const Store = {
   mode: 'none', db: null, dl: null, loaded: new Set(), status: 'saved', err: '',
   dirty: { cfg: false, log: false, months: new Set() }, timer: null, busy: false, again: false,
 
+  pending: new Map(), cfgVersion: 0, rev: 0, pollTimer: null,
+
+  /** تماس با API سرور؛ خطا را با {status, message} پرتاب می‌کند */
+  async api(method, path, body) {
+    const opt = { method, credentials: 'same-origin', headers: { 'X-Requested-With': 'shiftyar' } };
+    if (method !== 'GET') { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body === undefined ? {} : body); }
+    let res;
+    try { res = await fetch(path, opt); } catch (e) { throw { status: 0, message: 'ارتباط با سرور برقرار نشد.' }; }
+    let data = null;
+    try { data = await res.json(); } catch (e) { /* بدون بدنه */ }
+    if (!res.ok) {
+      if (res.status === 401 && path !== '/api/login') sessionLost();
+      throw { status: res.status, message: (data && data.error) || 'خطا در ارتباط با سرور.', data };
+    }
+    return data;
+  },
+  /** آیا همین صفحه را یک سرور شیفت‌یار سرو کرده است؟ */
+  async probeServer() {
+    if (!/^https?:$/.test(location.protocol)) return false;
+    try {
+      const res = await fetch('/api/session', { credentials: 'same-origin', headers: { 'X-Requested-With': 'shiftyar' } });
+      if (res.status !== 200) return false;
+      const data = await res.json();
+      if (!data || data.app !== 'shiftyar') return false;
+      if (data.user) ME.user = data.user;
+      return true;
+    } catch (e) { return false; }
+  },
+  async loadConfigServer() {
+    const r = await this.api('GET', '/api/config');
+    DB.cfg = normalizeCfg(r.cfg);
+    this.cfgVersion = r.version; this.rev = r.rev;
+    this.loaded = new Set(); DB.assign = {};
+  },
+  applyRange(a, b, assign) {
+    for (const pid in DB.assign) for (const k in DB.assign[pid]) { const j = +k; if (j >= a && j <= b) delete DB.assign[pid][k]; }
+    for (const pid in assign) for (const j in assign[pid]) (DB.assign[pid] = DB.assign[pid] || {})[+j] = assign[pid][j];
+  },
+  startPolling() {
+    clearInterval(this.pollTimer);
+    this.pollTimer = setInterval(() => this.poll(), 15000);
+  },
+  async poll() {
+    if (!ME.user || document.hidden || this.busy || this.pending.size || this.dirty.cfg || painting) return;
+    if (!['sched', 'pcal', 'rep'].includes(ui.tab)) return;
+    const ae = document.activeElement;
+    if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
+    try {
+      const r = await this.api('GET', '/api/rev');
+      if (r.rev === this.rev && r.version === this.cfgVersion) return;
+      const keepTab = ui.tab;
+      if (r.version !== this.cfgVersion) await this.loadConfigServer();
+      this.rev = r.rev; this.loaded = new Set();
+      if (ui.tab === keepTab) await render();
+    } catch (e) { /* در دور بعد دوباره */ }
+  },
+
   async init() {
     try {
       if (window.claude && typeof window.claude.use === 'function') {
@@ -573,7 +650,13 @@ const Store = {
         this.dl = await window.claude.use('downloads');
       }
     } catch (e) { this.db = null; }
-    if (this.db) {
+    if (!this.db && !window.claude && await this.probeServer()) {
+      this.mode = 'server';
+      DB.cfg = defaultCfg();
+      if (ME.user && !ME.user.mustChange) {
+        try { await this.enterApp(); } catch (e) { ME.user = null; loginMsg = e.message; }
+      }
+    } else if (this.db) {
       this.mode = 'db';
       try {
         const [c, l] = await Promise.all([this.db.doc('app/config').get(), this.db.doc('app/log').get()]);
@@ -589,7 +672,24 @@ const Store = {
       } catch (e) { /* خالی */ }
     }
   },
+  /** بعد از ورود موفق: بارگذاری پیکربندی و شروع بررسی دوره‌ای */
+  async enterApp() {
+    await this.loadConfigServer();
+    if (ME.user.role === 'staff' && DB.cfg.people[0]) ui.pcalPerson = DB.cfg.people[0].id;
+    this.startPolling();
+  },
   async ensureMonth(jy, jm) {
+    if (this.mode === 'server') {
+      const id = monthId(jy, jm);
+      if (this.loaded.has(id)) return;
+      const a = j2d(jy, jm, 1), b = a + monthLen(jy, jm) - 1;
+      try {
+        const r = await this.api('GET', `/api/assign?from=${a}&to=${b}`);
+        this.applyRange(a, b, r.assign);
+        this.loaded.add(id);
+      } catch (e) { this.fail(e); }
+      return;
+    }
     if (this.mode !== 'db') return;
     const id = monthId(jy, jm);
     if (this.loaded.has(id)) return;
@@ -608,7 +708,7 @@ const Store = {
     }
   },
   async ensureRange(a, b) {
-    if (this.mode !== 'db') return;
+    if (this.mode !== 'db' && this.mode !== 'server') return;
     let { jy, jm } = d2j(a - 3);
     const end = d2j(b);
     while (jy < end.jy || (jy === end.jy && jm <= end.jm)) {
@@ -627,9 +727,10 @@ const Store = {
       }
     } catch (e) { this.fail(e); }
   },
-  touchMonth(j) { const d = d2j(j); this.dirty.months.add(monthId(d.jy, d.jm)); this.schedule(); },
-  touchCfg() { this.dirty.cfg = true; this.schedule(); },
-  touchLog() { this.dirty.log = true; this.schedule(); },
+  touchMonth(j) { if (this.mode === 'server') return; const d = d2j(j); this.dirty.months.add(monthId(d.jy, d.jm)); this.schedule(); },
+  touchCell(pid, j, code) { this.pending.set(pid + ':' + j, { pid, j, code: code || null }); this.schedule(); },
+  touchCfg() { if (this.mode === 'server' && !canConfig()) return; this.dirty.cfg = true; this.schedule(); },
+  touchLog() { if (this.mode === 'server') return; this.dirty.log = true; this.schedule(); },
   monthDoc(jy, jm) {
     const a = j2d(jy, jm, 1), b = a + monthLen(jy, jm) - 1, m = {};
     for (const pid in DB.assign) { const mine = DB.assign[pid]; for (let j = a; j <= b; j++) if (mine[j]) m[pid + ':' + (j - a + 1)] = mine[j]; }
@@ -643,12 +744,60 @@ const Store = {
   statusText() {
     if (this.status === 'saving') return 'در حال ذخیره…';
     if (this.status === 'error') return 'ذخیره نشد' + (this.err ? ': ' + this.err : '');
-    return this.mode === 'db' ? 'ذخیره شد' : 'ذخیره در همین مرورگر';
+    return this.mode === 'db' || this.mode === 'server' ? 'ذخیره شد' : 'ذخیره در همین مرورگر';
   },
   fail(e) { this.err = (e && (e.message || e.code)) || 'خطا'; this.setStatus('error'); },
   schedule() { clearTimeout(this.timer); this.setStatus('saving'); this.timer = setTimeout(() => this.flush(), 500); },
+  async flushServer() {
+    let reloadMsg = '';
+    try {
+      if (this.dirty.cfg) {
+        this.dirty.cfg = false;
+        try {
+          const r = await this.api('PUT', '/api/config', { version: this.cfgVersion, cfg: DB.cfg });
+          this.cfgVersion = r.version;
+        } catch (e) {
+          if (e.status === 0) { this.dirty.cfg = true; throw e; }
+          if (e.status === 400 || e.status === 409 || e.status === 403) {
+            reloadMsg = e.message + ' آخرین اطلاعات سرور بارگذاری شد.';
+            await this.loadConfigServer();
+          } else throw e;
+        }
+      }
+      if (this.pending.size) {
+        const list = Array.from(this.pending.values());
+        this.pending = new Map();
+        for (let i = 0; i < list.length; i += 1500) {
+          const chunk = list.slice(i, i + 1500);
+          try {
+            const r = await this.api('POST', '/api/assign', { changes: chunk });
+            if (!r.applied || r.rev === this.rev + 1) this.rev = r.rev;
+          } catch (e) {
+            if (e.status === 0) { chunk.forEach((c) => { const k = c.pid + ':' + c.j; if (!this.pending.has(k)) this.pending.set(k, c); }); throw e; }
+            if (e.status === 400 || e.status === 403) {
+              reloadMsg = e.message + ' تغییرها اعمال نشد.';
+              this.loaded = new Set(); DB.assign = {};
+            } else throw e;
+          }
+        }
+      }
+      this.err = '';
+      this.setStatus('saved');
+    } catch (e) {
+      if (!ME.user) return;
+      this.fail(e);
+      if (e.status === 0) setTimeout(() => { if (ME.user && (this.pending.size || this.dirty.cfg)) this.schedule(); }, 5000);
+      return;
+    }
+    if (reloadMsg) { await render(); flash(reloadMsg, false); }
+  },
   async flush() {
     if (this.busy) { this.again = true; return; }
+    if (this.mode === 'server') {
+      this.busy = true;
+      try { await this.flushServer(); } finally { this.busy = false; if (this.again) { this.again = false; this.flush(); } }
+      return;
+    }
     this.busy = true;
     const d = this.dirty;
     const cfg = d.cfg, log = d.log, months = Array.from(d.months);
@@ -693,17 +842,19 @@ const Store = {
 
 /* ---------- عملیات روی داده ---------- */
 function logEv(text) {
+  if (isServer()) return; // سرور خودش با نام کاربر ثبت می‌کند
   DB.log.unshift({ t: Date.now(), x: text });
   if (DB.log.length > 200) DB.log.length = 200;
   Store.touchLog();
 }
 function setAssign(pid, j, code, stroke) {
+  if (!canEdit()) return false;
   const mine = (DB.assign[pid] = DB.assign[pid] || {});
   const old = mine[j];
   if (old === code || (!old && !code)) return false;
   if (code) mine[j] = code; else delete mine[j];
   if (stroke) stroke.push({ pid, j, old, nw: code });
-  Store.touchMonth(j);
+  if (isServer()) Store.touchCell(pid, j, code); else Store.touchMonth(j);
   return true;
 }
 function finishStroke(stroke, label) {
@@ -852,10 +1003,17 @@ function refreshRow(pid) {
 /* ---------- تب: تقویم فرد ---------- */
 function viewPcal() {
   const ps = sortedPeople();
-  if (!ps.length) return `<div class="panel empty"><b>پرسنلی ثبت نشده</b><button class="btn primary" data-tab="people">افزودن پرسنل</button></div>`;
+  if (!ps.length) {
+    return canConfig() || !isServer()
+      ? `<div class="panel empty"><b>پرسنلی ثبت نشده</b><button class="btn primary" data-tab="people">افزودن پرسنل</button></div>`
+      : `<div class="panel empty"><b>حساب شما به هیچ فردی در فهرست پرسنل وصل نشده است</b><span>از مدیر سیستم بخواهید حساب شما را به نام خودتان وصل کند.</span></div>`;
+  }
   if (!person(ui.pcalPerson)) ui.pcalPerson = ps[0].id;
-  return `${monthNav(`<span class="sp"></span><select id="pcal-person" aria-label="فرد">${ps.map((p) => `<option value="${p.id}"${p.id === ui.pcalPerson ? ' selected' : ''}>${esc(pname(p))}</option>`).join('')}</select>`)}
-    <div class="panel">${brushBar()}<div id="pcal-body">${pcalBody()}</div></div>`;
+  const picker = ps.length > 1
+    ? `<select id="pcal-person" aria-label="فرد">${ps.map((p) => `<option value="${p.id}"${p.id === ui.pcalPerson ? ' selected' : ''}>${esc(pname(p))}</option>`).join('')}</select>`
+    : `<b>${esc(pname(ps[0]))}</b>`;
+  return `${monthNav(`<span class="sp"></span>${picker}`)}
+    <div class="panel">${canEdit() ? brushBar() : ''}<div id="pcal-body">${pcalBody()}</div></div>`;
 }
 function pcalBody() {
   const p = person(ui.pcalPerson); if (!p) return '';
@@ -869,7 +1027,7 @@ function pcalBody() {
   for (let i = 0; i < weekdayOf(a); i++) h += '<div class="pc-day blank"></div>';
   for (let i = 0; i < len; i++) {
     const j = a + i;
-    h += `<div class="pc-day cell${hm[j] ? ' hol' : ''}${j === T ? ' today' : ''}${iss[j] ? ' warn' : ''}" data-pid="${p.id}" data-j="${j}" role="button" tabindex="0"${iss[j] ? ` title="${esc(iss[j].join(' / '))}"` : ''}><div class="d"><span>${fa(i + 1)}</span>${hm[j] ? `<em>${esc(hm[j].name)}</em>` : ''}</div>${chipHtml(mine[j], color)}</div>`;
+    h += `<div class="pc-day cell${hm[j] ? ' hol' : ''}${j === T ? ' today' : ''}${iss[j] ? ' warn' : ''}${canEdit() ? '' : ' ro'}" data-pid="${p.id}" data-j="${j}"${canEdit() ? ' role="button" tabindex="0"' : ''}${iss[j] ? ` title="${esc(iss[j].join(' / '))}"` : ''}><div class="d"><span>${fa(i + 1)}</span>${hm[j] ? `<em>${esc(hm[j].name)}</em>` : ''}</div>${chipHtml(mine[j], color)}</div>`;
   }
   const ot = r.overtime;
   const st = (l, v, cls) => `<div class="stat ${cls || ''}"><small>${l}</small><b>${hmH(v)}</b></div>`;
@@ -994,6 +1152,7 @@ function viewHol() {
 }
 
 /* ---------- تب: گزارش‌ها ---------- */
+const repDept = () => { const el = $('#rep-dept'); return el ? el.value : 'all'; };
 function repRange() {
   const { a, b } = monthInfo();
   if (ui.rep.from == null) { ui.rep.from = a; ui.rep.to = b; }
@@ -1041,7 +1200,7 @@ function viewRep() {
   return `<div class="panel"><div class="bar">
       <label class="f">از تاریخ<input type="text" id="rep-from" dir="ltr" size="11" value="${fmtDateLatin(R.from)}"></label>
       <label class="f">تا تاریخ<input type="text" id="rep-to" dir="ltr" size="11" value="${fmtDateLatin(R.to)}"></label>
-      <label class="f">بخش${deptSelect('rep-dept', ui.rep.dept, true)}</label>
+      ${role() === 'staff' ? '' : `<label class="f">بخش${deptSelect('rep-dept', ui.rep.dept, true)}</label>`}
       <button class="btn primary" data-act="repgo" style="align-self:flex-end">نمایش</button>
       <span class="sp"></span>
       <button class="btn sm" data-act="repmonth" style="align-self:flex-end">ماهِ انتخاب‌شده</button>
@@ -1074,8 +1233,17 @@ function viewSet() {
   const logRows = DB.log.slice(0, 100).map((l) => {
     const d = new Date(l.t);
     const j = d2j(Core.g2d(d.getFullYear(), d.getMonth() + 1, d.getDate()));
-    return `<tr><td>${N(fa(j.jy + '/' + pad2(j.jm) + '/' + pad2(j.jd) + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes())))}</td><td>${esc(l.x)}</td></tr>`;
+    return `<tr><td>${N(fa(j.jy + '/' + pad2(j.jm) + '/' + pad2(j.jd) + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes())))}</td>${isServer() ? `<td>${esc(l.who || '')}</td>` : ''}<td>${esc(l.x)}</td></tr>`;
   }).join('');
+  const logPanel = `<div class="panel"><h2>گزارش تغییرات</h2>${logRows ? `<div class="tw" style="max-height:340px;overflow:auto"><table class="t"><thead><tr><th>زمان</th>${isServer() ? '<th>کاربر</th>' : ''}<th>تغییر</th></tr></thead><tbody>${logRows}</tbody></table></div>` : '<div class="note">هنوز تغییری ثبت نشده است.</div>'}</div>`;
+  const tail = isServer()
+    ? `<div class="panel"><h2>پشتیبان‌گیری</h2><div class="note">اطلاعات در پایگاه‌دادهٔ SQLite روی سرور نگه‌داری می‌شود. برای پشتیبان‌گیری از پوشهٔ <span class="num">data</span> (فایل <span class="num">shiftyar.db</span>) نسخه بگیرید؛ راهنمای کامل در README آمده است.</div></div>${logPanel}`
+    : `<div class="panel"><h2>پشتیبان‌گیری</h2>
+      <div class="bar"><button class="btn" data-act="backup">ذخیرهٔ فایل پشتیبان (JSON)</button>
+      <label class="btn" style="display:inline-flex;align-items:center;cursor:pointer">بازیابی از فایل<input type="file" id="restore-file" accept=".json,application/json" hidden></label></div>
+      <div class="note">${Store.mode === 'db' ? 'اطلاعات در فضای ذخیرهٔ همین برنامه نگه‌داری می‌شود. با این حال گاهی فایل پشتیبان بگیرید.' : 'ذخیرهٔ دائمی در این نما در دسترس نیست و اطلاعات فقط در همین مرورگر می‌ماند. حتماً فایل پشتیبان بگیرید.'}</div>
+      <div id="set-msg"></div></div>${logPanel}
+    <div class="panel"><h2>پاک‌سازی کامل</h2><div class="bar"><button class="btn danger" data-act="resetall" data-confirm="همهٔ داده‌ها پاک شود؟">حذف همهٔ اطلاعات</button></div></div>`;
   return `<div class="panel"><h2>قواعد محاسبه</h2><div class="formgrid">
       <label class="f">موظفی هر روز کاری (ساعت:دقیقه)<input type="text" dir="ltr" data-set="dutyMin" value="${fmtHMlatin(S.dutyMin).replace(/^(\d):/, '0$1:')}"></label>
       <label class="f">ضریب تعطیلی — شرکتی<input type="number" step="0.05" min="1" data-set="f:company" value="${S.factors.company}"></label>
@@ -1084,31 +1252,137 @@ function viewSet() {
       <label class="f">حداقل استراحت بین دو شیفت (ساعت)<input type="number" min="0" max="48" data-set="minRestH" value="${S.minRestH}"></label>
       <label class="f">سقف هشدار اضافه‌کار ماهانه (ساعت، ۰ = بدون هشدار)<input type="number" min="0" data-set="otCapH" value="${S.otCapH}"></label></div>
       <div class="note">مرخصی استحقاقی و استعلاجی در روزهای کاری معادل یک روز موظفی اعتبار می‌گیرند؛ در روزهای تعطیل اعتبار ندارند. مرخصی بدون حقوق، استراحت و غیبت اعتبار ندارند.</div></div>
-    <div class="panel"><h2>پشتیبان‌گیری</h2>
-      <div class="bar"><button class="btn" data-act="backup">ذخیرهٔ فایل پشتیبان (JSON)</button>
-      <label class="btn" style="display:inline-flex;align-items:center;cursor:pointer">بازیابی از فایل<input type="file" id="restore-file" accept=".json,application/json" hidden></label></div>
-      <div class="note">${Store.mode === 'db' ? 'اطلاعات در فضای ذخیرهٔ همین برنامه نگه‌داری می‌شود. با این حال گاهی فایل پشتیبان بگیرید.' : 'ذخیرهٔ دائمی در این نما در دسترس نیست و اطلاعات فقط در همین مرورگر می‌ماند. حتماً فایل پشتیبان بگیرید.'}</div>
-      <div id="set-msg"></div></div>
-    <div class="panel"><h2>گزارش تغییرات</h2>${logRows ? `<div class="tw" style="max-height:340px;overflow:auto"><table class="t"><thead><tr><th>زمان</th><th>تغییر</th></tr></thead><tbody>${logRows}</tbody></table></div>` : '<div class="note">هنوز تغییری ثبت نشده است.</div>'}</div>
-    <div class="panel"><h2>پاک‌سازی کامل</h2><div class="bar"><button class="btn danger" data-act="resetall" data-confirm="همهٔ داده‌ها پاک شود؟">حذف همهٔ اطلاعات</button></div></div>`;
+    ${tail}`;
+}
+
+/* ---------- ورود، حساب من، کاربران (حالت سرور) ---------- */
+function viewLogin(msg) {
+  return `<div class="wrap" style="max-width:420px;margin-top:8vh">
+    <div class="brand" style="justify-content:center"><h1>شیفت‌یار</h1></div>
+    <form class="panel" id="f-login" autocomplete="on">
+      <h2>ورود</h2>
+      ${msg ? `<div class="msg">${esc(msg)}</div>` : ''}
+      <label class="f">کد کاربری (کد پرسنلی)<input type="text" name="code" id="login-code" dir="ltr" autocomplete="username" autocapitalize="off" spellcheck="false" required></label>
+      <label class="f">گذرواژه<input type="password" name="password" id="login-pw" dir="ltr" autocomplete="current-password" required></label>
+      <div class="bar"><button class="btn primary" type="submit" id="login-btn">ورود</button></div>
+      <div class="note">اگر گذرواژه را فراموش کرده‌اید، از مدیر سیستم بخواهید آن را بازنشانی کند.</div>
+    </form></div>`;
+}
+function viewForceChange(msg) {
+  return `<div class="wrap" style="max-width:420px;margin-top:8vh">
+    <div class="brand" style="justify-content:center"><h1>شیفت‌یار</h1></div>
+    <form class="panel" id="f-pw" autocomplete="off" data-force="1">
+      <h2>تعیین گذرواژهٔ جدید</h2>
+      <div class="note">گذرواژهٔ شما موقت است. پیش از ادامه یک گذرواژهٔ تازه (حداقل ۸ نویسه) انتخاب کنید.</div>
+      ${msg ? `<div class="msg">${esc(msg)}</div>` : ''}
+      <label class="f">گذرواژهٔ فعلی (موقت)<input type="password" name="current" dir="ltr" autocomplete="current-password" required></label>
+      <label class="f">گذرواژهٔ جدید<input type="password" name="next" dir="ltr" autocomplete="new-password" minlength="8" required></label>
+      <label class="f">تکرار گذرواژهٔ جدید<input type="password" name="again" dir="ltr" autocomplete="new-password" minlength="8" required></label>
+      <div class="bar"><button class="btn primary" type="submit">ذخیره و ورود</button><button class="btn" type="button" data-act="logout">خروج</button></div>
+    </form></div>`;
+}
+function viewAcct() {
+  const u = ME.user, p = u.personId ? person(u.personId) : null;
+  return `<div class="split"><div class="panel"><h2>حساب من</h2>
+      <div class="stats" style="grid-template-columns:1fr">
+        <div class="stat"><small>نام</small><b>${esc(u.display || u.code)}</b></div>
+        <div class="stat"><small>کد کاربری</small><b class="num">${esc(u.code)}</b></div>
+        <div class="stat"><small>نقش</small><b>${ROLE_NAMES[u.role]}</b></div>
+        ${p ? `<div class="stat"><small>قرارداد</small><b>${CONTRACTS[p.contract] || ''}</b></div>` : ''}
+      </div>
+      <div class="bar"><button class="btn" data-act="logout">خروج از حساب</button></div></div>
+    <form class="panel" id="f-pw" autocomplete="off"><h2>تغییر گذرواژه</h2>
+      <label class="f">گذرواژهٔ فعلی<input type="password" name="current" dir="ltr" autocomplete="current-password" required></label>
+      <label class="f">گذرواژهٔ جدید (حداقل ۸ نویسه)<input type="password" name="next" dir="ltr" autocomplete="new-password" minlength="8" required></label>
+      <label class="f">تکرار گذرواژهٔ جدید<input type="password" name="again" dir="ltr" autocomplete="new-password" minlength="8" required></label>
+      <div class="bar"><button class="btn primary" type="submit">تغییر گذرواژه</button><span id="f-pw-msg"></span></div>
+      <div class="note">پس از تغییر، نشست‌های دیگرِ این حساب بسته می‌شوند.</div></form></div>`;
+}
+const usersState = { list: [], edit: null, notice: '' };
+async function loadUsers() {
+  try { usersState.list = (await Store.api('GET', '/api/users')).users; } catch (e) { usersState.list = []; usersState.notice = e.message; }
+}
+function viewUsers() {
+  const e = usersState.edit;
+  const taken = new Set(usersState.list.map((u) => u.personId).filter(Boolean));
+  const free = sortedPeople().filter((p) => !taken.has(p.id) || (e && e.personId === p.id));
+  const roleSel = (cur) => ['staff', 'manager', 'admin'].map((r) => `<option value="${r}"${(cur || 'staff') === r ? ' selected' : ''}>${ROLE_NAMES[r]}</option>`).join('');
+  const curRole = e ? e.role : 'staff';
+  const form = `<form class="panel" id="f-user" autocomplete="off">
+    <h2>${e ? 'ویرایش حساب ' + esc(e.code) : 'حساب جدید'}</h2>
+    <div class="formgrid">
+      <label class="f">کد کاربری<input type="text" name="code" dir="ltr" required value="${esc(e ? e.code : '')}"></label>
+      <label class="f">نقش<select name="role" id="u-role">${roleSel(curRole)}</select></label>
+      <label class="f">فرد در فهرست پرسنل<select name="personId" id="u-person"><option value="">— ندارد (فقط برای مدیر سیستم) —</option>${free.map((p) => `<option value="${esc(p.id)}"${e && e.personId === p.id ? ' selected' : ''}>${esc(pname(p))}${p.code ? ' (' + esc(p.code) + ')' : ''}</option>`).join('')}</select></label>
+      ${e ? '' : '<label class="f">گذرواژه (خالی = موقت خودکار)<input type="text" name="password" dir="ltr" autocomplete="off"></label>'}
+    </div>
+    <fieldset id="u-depts" style="border:1px solid var(--line);border-radius:6px;padding:8px 12px;${curRole === 'manager' ? '' : 'display:none'}">
+      <legend class="note">بخش‌هایی که مدیر بخش می‌تواند برنامه‌شان را ویرایش کند</legend>
+      <div class="rows">${DB.cfg.depts.map((d) => `<label class="chk"><input type="checkbox" name="dept" value="${esc(d.id)}"${e && e.deptIds.includes(d.id) ? ' checked' : ''}><span class="dot" style="--dc:${esc(d.color)}"></span>${esc(d.name)}</label>`).join('') || '<span class="note">هنوز بخشی تعریف نشده است.</span>'}</div>
+    </fieldset>
+    <div class="bar"><button class="btn primary" type="submit">${e ? 'ذخیرهٔ تغییرات' : 'ساخت حساب'}</button>${e ? '<button class="btn" type="button" data-act="canceluser">انصراف</button>' : ''}<span id="f-user-msg"></span></div>
+    ${e ? '' : '<div class="note">گذرواژهٔ موقت فقط یک بار نمایش داده می‌شود و فرد در اولین ورود مجبور به تعویض آن است.</div>'}
+  </form>`;
+  const rows = usersState.list.map((u) => `<tr>
+      <td class="num">${esc(u.code)}</td><td>${esc(u.display || u.personName)}</td><td><span class="pill">${ROLE_NAMES[u.role]}</span></td>
+      <td>${u.role === 'manager' ? (u.deptIds.map((id) => (dept(id) || {}).name).filter(Boolean).map(esc).join('، ') || '—') : '—'}</td>
+      <td>${u.active ? (u.mustChange ? '<span class="pill">گذرواژهٔ موقت</span>' : 'فعال') : '<span class="pill" style="color:var(--hol-ink)">غیرفعال</span>'}</td>
+      <td><button class="btn sm" data-act="edituser" data-id="${u.id}">ویرایش</button>
+        <button class="btn sm" data-act="resetuser" data-id="${u.id}" data-confirm="گذرواژهٔ جدید ساخته و نشست‌ها بسته شود؟">بازنشانی گذرواژه</button>
+        ${u.id === ME.user.id ? '' : `<button class="btn sm" data-act="toggleuser" data-id="${u.id}">${u.active ? 'غیرفعال‌سازی' : 'فعال‌سازی'}</button>
+        <button class="btn sm danger" data-act="deluser" data-id="${u.id}" data-confirm="حساب حذف شود؟">حذف</button>`}</td></tr>`).join('');
+  const noAcct = DB.cfg.people.filter((p) => p.code && !taken.has(p.id)).length;
+  return `${usersState.notice ? `<div class="panel" id="u-notice" style="border-color:var(--accent)"><div>${usersState.notice}</div><div class="bar"><button class="btn sm" data-act="dismissnotice">بستن</button></div></div>` : ''}
+    <div class="panel"><h2>ساخت گروهی حساب پرسنل</h2>
+      <div class="note">برای هر فرد دارای کد پرسنلی که هنوز حساب ندارد، یک حساب «پرسنل» با کد پرسنلی او و گذرواژهٔ موقت ساخته می‌شود. فهرست گذرواژه‌ها فقط همین یک بار نمایش داده می‌شود. ${N(fa(noAcct))} نفر حساب ندارند.</div>
+      <div class="bar"><button class="btn" data-act="provision"${noAcct ? '' : ' disabled'}>ساخت حساب برای ${N(fa(noAcct))} نفر</button></div></div>
+    <div class="split">${form}<div style="min-width:0;display:flex;flex-direction:column;gap:10px"><h2>${N(fa(usersState.list.length))} حساب</h2>
+      <div class="tw"><table class="t"><thead><tr><th>کد</th><th>نام</th><th>نقش</th><th>بخش‌ها</th><th>وضعیت</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div></div>`;
 }
 
 /* ---------- رندر اصلی ---------- */
 const TABS = [['sched', 'برنامه شیفت'], ['pcal', 'تقویم فرد'], ['people', 'پرسنل'], ['depts', 'بخش‌ها'], ['shifts', 'شیفت‌ها'], ['hol', 'تعطیلات'], ['rep', 'گزارش‌ها'], ['set', 'تنظیمات و پشتیبان']];
+function tabsFor() {
+  if (!isServer()) return TABS;
+  const r = role(), acct = ['acct', 'حساب من'];
+  if (r === 'admin') return TABS.slice(0, 7).concat([['users', 'کاربران'], ['set', 'تنظیمات'], acct]);
+  if (r === 'manager') return [['sched', 'برنامه شیفت'], ['pcal', 'تقویم فرد'], ['rep', 'گزارش‌ها'], acct];
+  return [['pcal', 'برنامه من'], ['rep', 'گزارش من'], acct];
+}
+let loginMsg = '';
+function sessionLost() {
+  if (!ME.user) return;
+  ME.user = null;
+  clearInterval(Store.pollTimer);
+  Store.pending = new Map(); Store.loaded = new Set(); DB.assign = {}; DB.cfg = defaultCfg();
+  loginMsg = 'نشست شما تمام شد. دوباره وارد شوید.';
+  render();
+}
 let renderTok = 0;
 async function render() {
   const app = $('#app');
   if (!DB.cfg) { app.innerHTML = '<div class="panel empty"><b>در حال بارگذاری…</b></div>'; return; }
+  if (isServer() && !ME.user) {
+    app.innerHTML = viewLogin(loginMsg); loginMsg = '';
+    const c = $('#login-code'); if (c) c.focus();
+    return;
+  }
+  if (isServer() && ME.user.mustChange) { app.innerHTML = viewForceChange(loginMsg); loginMsg = ''; return; }
   const tok = ++renderTok;
+  const tabs = tabsFor();
+  if (!tabs.some((t) => t[0] === ui.tab)) ui.tab = tabs[0][0];
   const { a, b } = monthInfo();
   if (ui.tab === 'sched' || ui.tab === 'pcal') await Store.ensureRange(a, b);
   if (ui.tab === 'rep') { const r = repRange(); await Store.ensureRange(r.from, r.to); }
-  if (tok !== renderTok) return;
-  const views = { sched: viewSched, pcal: viewPcal, people: viewPeople, depts: viewDepts, shifts: viewShifts, hol: viewHol, rep: viewRep, set: viewSet };
+  if (ui.tab === 'users') await loadUsers();
+  if (ui.tab === 'set' && isServer()) { try { DB.log = (await Store.api('GET', '/api/log?limit=100')).items; } catch (e) { DB.log = []; } }
+  if (tok !== renderTok || (isServer() && !ME.user)) return;
+  const views = { sched: viewSched, pcal: viewPcal, people: viewPeople, depts: viewDepts, shifts: viewShifts, hol: viewHol, rep: viewRep, set: viewSet, acct: viewAcct, users: viewUsers };
+  const who = isServer() ? `<span class="note who">${esc(ME.user.display || ME.user.code)} · ${ROLE_NAMES[ME.user.role]}</span>` : '';
   app.innerHTML = `<div class="wrap">
     <div class="top"><div class="brand"><h1>شیفت‌یار</h1><small>برنامه‌ریز شیفت پرسنل</small></div>
-      <span id="savestate" class="save ${Store.status}"><i></i><span>${esc(Store.statusText())}</span></span></div>
-    <nav class="tabs" role="tablist">${TABS.map(([k, l]) => `<button role="tab" aria-selected="${ui.tab === k}" data-tab="${k}">${l}</button>`).join('')}</nav>
+      <div class="rows">${who}<span id="savestate" class="save ${Store.status}"><i></i><span>${esc(Store.statusText())}</span></span></div></div>
+    <nav class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${ui.tab === k}" data-tab="${k}">${l}</button>`).join('')}</nav>
     <div id="flash" aria-live="polite"></div>
     <main id="main" style="display:flex;flex-direction:column;gap:12px">${views[ui.tab]()}</main></div>`;
   if (ui.tab === 'shifts') shiftDraftPreview();
@@ -1131,6 +1405,15 @@ async function saveFile(filename, data, label) {
   if (Store.dl) {
     try { await Store.dl.save({ filename, data }); return true; }
     catch (e) { if (e && e.code === 'declined') return false; }
+  } else if (!window.claude) {
+    // صفحهٔ معمولی (سرور یا فایل محلی): دانلود مستقیم مرورگر
+    try {
+      const url = URL.createObjectURL(new Blob([data], { type: 'text/plain;charset=utf-8' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+      return true;
+    } catch (e) { /* ادامه با نمایش متن */ }
   }
   showText(label || filename, typeof data === 'string' ? data : '');
   return false;
@@ -1147,7 +1430,7 @@ function applyBrush(td) {
   if (setAssign(pid, j, nw, stroke)) { if (ui.tab === 'pcal') refreshPcal(); else refreshRow(pid); }
 }
 document.addEventListener('pointerdown', (e) => {
-  if (e.button > 0) return;
+  if (e.button > 0 || !canEdit()) return;
   const td = e.target.closest('.cell[data-pid]');
   if (!td || !(ui.tab === 'sched' || ui.tab === 'pcal')) return;
   painting = true; stroke = []; strokeFirst = true;
@@ -1164,7 +1447,7 @@ document.addEventListener('pointerup', endStroke);
 document.addEventListener('pointercancel', endStroke);
 document.addEventListener('keydown', (e) => {
   const td = e.target.closest && e.target.closest('.cell[data-pid]');
-  if (!td) return;
+  if (!td || !canEdit()) return;
   if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault(); stroke = []; strokeFirst = true; const pid = td.dataset.pid, j = td.dataset.j;
     applyBrush(td); finishStroke(stroke, codeLabel(ui.brush)); stroke = null;
@@ -1281,12 +1564,51 @@ document.addEventListener('click', async (e) => {
       if (f == null || to == null) return flash('تاریخ را به شکل ۱۴۰۵/۰۷/۲۵ بنویسید.', false, '#rep-msg');
       if (to < f) return flash('تاریخ پایان باید بعد از شروع باشد.', false, '#rep-msg');
       if (to - f > 400) return flash('بازه حداکثر ۴۰۰ روز می‌تواند باشد.', false, '#rep-msg');
-      ui.rep.from = f; ui.rep.to = to; ui.rep.dept = $('#rep-dept').value; return render();
+      ui.rep.from = f; ui.rep.to = to; ui.rep.dept = repDept(); return render();
     }
-    case 'repmonth': { const m = monthInfo(); ui.rep.from = m.a; ui.rep.to = m.b; ui.rep.dept = $('#rep-dept').value; return render(); }
-    case 'repweek': { const T = todayJdn(), s = T - weekdayOf(T); ui.rep.from = s; ui.rep.to = s + 6; ui.rep.dept = $('#rep-dept').value; return render(); }
-    case 'reptoday': { const T = todayJdn(); ui.rep.from = T; ui.rep.to = T; ui.rep.dept = $('#rep-dept').value; return render(); }
-    case 'repcsv': { ui.rep.dept = $('#rep-dept').value; const c = csvText(); const ok = await saveFile(c.name, c.text, 'متن CSV'); if (ok) flash('فایل ذخیره شد.', true, '#rep-msg'); return; }
+    case 'repmonth': { const m = monthInfo(); ui.rep.from = m.a; ui.rep.to = m.b; ui.rep.dept = repDept(); return render(); }
+    case 'repweek': { const T = todayJdn(), s = T - weekdayOf(T); ui.rep.from = s; ui.rep.to = s + 6; ui.rep.dept = repDept(); return render(); }
+    case 'reptoday': { const T = todayJdn(); ui.rep.from = T; ui.rep.to = T; ui.rep.dept = repDept(); return render(); }
+    case 'repcsv': { ui.rep.dept = repDept(); const c = csvText(); const ok = await saveFile(c.name, c.text, 'متن CSV'); if (ok) flash('فایل ذخیره شد.', true, '#rep-msg'); return; }
+    /* حساب و کاربران (حالت سرور) */
+    case 'logout': {
+      try { await Store.api('POST', '/api/logout'); } catch (e) { /* حتی با خطا از برنامه خارج می‌شویم */ }
+      ME.user = null; clearInterval(Store.pollTimer);
+      Store.pending = new Map(); Store.loaded = new Set(); DB.assign = {}; DB.cfg = defaultCfg();
+      ui.undo = []; usersState.list = []; usersState.edit = null; usersState.notice = ''; loginMsg = '';
+      return render();
+    }
+    case 'dismissnotice': usersState.notice = ''; return render();
+    case 'edituser': usersState.edit = usersState.list.find((u) => u.id === +id) || null; return render();
+    case 'canceluser': usersState.edit = null; return render();
+    case 'toggleuser': {
+      const u = usersState.list.find((x) => x.id === +id);
+      try { await Store.api('PATCH', '/api/users/' + id, { active: !u.active }); await render(); } catch (err) { await render(); flash(err.message, false); }
+      return;
+    }
+    case 'deluser': {
+      try { await Store.api('DELETE', '/api/users/' + id); await render(); } catch (err) { await render(); flash(err.message, false); }
+      return;
+    }
+    case 'resetuser': {
+      const u = usersState.list.find((x) => x.id === +id);
+      try {
+        const r = await Store.api('POST', `/api/users/${id}/reset`);
+        usersState.notice = `گذرواژهٔ موقت <b>${esc(u ? u.code : '')}</b>: <span class="num">${esc(r.tempPassword)}</span> — فقط همین یک بار نمایش داده می‌شود.`;
+        await render();
+      } catch (err) { await render(); flash(err.message, false); }
+      return;
+    }
+    case 'provision': {
+      try {
+        const r = await Store.api('POST', '/api/users/provision');
+        usersState.notice = `${N(fa(r.created.length))} حساب ساخته شد. فهرست گذرواژه‌های موقت را پایین صفحه ببینید؛ فقط همین یک بار نمایش داده می‌شود.`;
+        await render();
+        const lines = ['کد کاربری\tنام\tگذرواژهٔ موقت'].concat(r.created.map((x) => `${x.code}\t${x.name}\t${x.tempPassword}`));
+        showText('گذرواژه‌های موقت', lines.join('\n'));
+      } catch (err) { await render(); flash(err.message, false); }
+      return;
+    }
     /* تنظیمات */
     case 'backup': {
       await Store.loadAll();
@@ -1366,6 +1688,61 @@ document.addEventListener('change', async (e) => {
 document.addEventListener('input', (e) => {
   const t = e.target;
   if (t.dataset.sd === 'code' || t.dataset.sd === 'name') { ui.shiftDraft[t.dataset.sd] = t.value; }
+});
+
+/* ---------- فرم‌های ورود، گذرواژه و کاربران (حالت سرور) ---------- */
+document.addEventListener('submit', async (e) => {
+  const f = e.target;
+  if (!['f-login', 'f-pw', 'f-user'].includes(f.id)) return;
+  e.preventDefault();
+  const fd = new FormData(f);
+  const btn = f.querySelector('button[type=submit]');
+  if (btn) btn.disabled = true;
+  try {
+    if (f.id === 'f-login') {
+      try {
+        const r = await Store.api('POST', '/api/login', { code: toLatin(String(fd.get('code') || '').trim()), password: String(fd.get('password') || '') });
+        ME.user = r.user; loginMsg = '';
+        if (!ME.user.mustChange) await Store.enterApp();
+        ui.tab = tabsFor()[0][0];
+      } catch (err) { ME.user = null; loginMsg = err.message; }
+      await render();
+    } else if (f.id === 'f-pw') {
+      const force = f.dataset.force === '1';
+      const cur = String(fd.get('current') || ''), nx = String(fd.get('next') || ''), again = String(fd.get('again') || '');
+      const fail = async (m) => { if (force) { loginMsg = m; await render(); } else flash(m, false, '#f-pw-msg'); };
+      if (nx !== again) return fail('تکرار گذرواژه با گذرواژهٔ جدید یکی نیست.');
+      try {
+        await Store.api('POST', '/api/password', { current: cur, next: nx });
+        if (force) { ME.user.mustChange = false; await Store.enterApp(); ui.tab = tabsFor()[0][0]; loginMsg = ''; await render(); flash('گذرواژهٔ جدید ذخیره شد.', true); }
+        else { f.reset(); flash('گذرواژه تغییر کرد.', true, '#f-pw-msg'); }
+      } catch (err) { await fail(err.message); }
+    } else if (f.id === 'f-user') {
+      const role_ = fd.get('role');
+      const body = {
+        code: String(fd.get('code') || '').trim(), role: role_, personId: fd.get('personId') || null,
+        deptIds: role_ === 'manager' ? fd.getAll('dept') : [],
+      };
+      const editing = usersState.edit;
+      if (!editing && fd.get('password')) body.password = String(fd.get('password'));
+      try {
+        if (editing) { await Store.api('PATCH', '/api/users/' + editing.id, body); usersState.edit = null; }
+        else {
+          const r = await Store.api('POST', '/api/users', body);
+          usersState.notice = r.tempPassword
+            ? `گذرواژهٔ موقت <b>${esc(r.user.code)}</b>: <span class="num">${esc(r.tempPassword)}</span> — فقط همین یک بار نمایش داده می‌شود.`
+            : `حساب <b>${esc(r.user.code)}</b> ساخته شد.`;
+        }
+        await render();
+      } catch (err) { flash(err.message, false, '#f-user-msg'); }
+    }
+  } finally {
+    const again = f.isConnected ? f.querySelector('button[type=submit]') : null;
+    if (again) again.disabled = false;
+  }
+});
+document.addEventListener('change', (e) => {
+  if (e.target.id === 'u-role') { const fs = $('#u-depts'); if (fs) fs.style.display = e.target.value === 'manager' ? '' : 'none'; }
 });
 
 /* ---------- شروع ---------- */

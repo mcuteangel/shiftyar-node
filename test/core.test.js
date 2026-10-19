@@ -1,4 +1,4 @@
-const C = require('./core.js');
+const C = require('../web/core.js');
 const assert = require('assert');
 const results = [];
 function t(name, fn) {

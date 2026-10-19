@@ -1,0 +1,13 @@
+{
+  "name": "shiftyar",
+  "version": "0.2.0",
+  "description": "شیفت‌یار: برنامه‌ریز شیفت پرسنل با تقویم شمسی، سرور و ورود کاربران",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node test/core.test.js && node --test test/server.test.js",
+    "build:single": "python3 build.py"
+  }
+}

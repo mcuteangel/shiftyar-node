@@ -1,0 +1,5 @@
+# نمونهٔ پروکسی معکوس با HTTPS خودکار (Caddy). دامنه را عوض کنید.
+shifts.example.ir {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:3000
+}
