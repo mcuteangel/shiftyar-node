@@ -124,7 +124,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await login(staff, '1001', temps['1001']);
   await forceChange(staff, temps['1001'], 'Staff#pass1');
   const tabsStaff = await staff.locator('nav.tabs button').allInnerTexts();
-  ok(JSON.stringify(tabsStaff) === JSON.stringify(['برنامه من', 'گزارش من', 'حساب من']), 'تب‌های پرسنل: ' + tabsStaff.join('، '));
+  ok(JSON.stringify(tabsStaff) === JSON.stringify(['برنامه من', 'گزارش من', 'درخواست‌ها', 'حساب من']), 'تب‌های پرسنل: ' + tabsStaff.join('، '));
   ok(await staff.locator('[data-brush]').count() === 0, 'پرسنل قلم ویرایش ندارد');
   ok(await staff.locator('.pc-day.cell .c').count() === 4, 'پرسنل شیفت‌های خودش را می‌بیند');
   const before = await staff.locator('.pc-day .c').count();
@@ -166,6 +166,31 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await admin2.screenshot({ path: path.join(OUT, '6-admin-settings.png') });
   await admin2.click('[data-tab="rep"]'); await sleep(500);
   await admin2.screenshot({ path: path.join(OUT, '7-report.png'), fullPage: true });
+
+
+  // درخواست مرخصی: پرسنل ثبت می‌کند، مدیر سیستم تأیید می‌کند، برنامه تغییر می‌کند
+  const Core = require('../web/core.js');
+  const dA = Core.fmtDateLatin(Core.todayJdn() + 5), dB = Core.fmtDateLatin(Core.todayJdn() + 6);
+  await staff.click('[data-tab="req"]'); await sleep(500);
+  ok(await staff.locator('#f-leave').count() === 1 && await staff.locator('#f-swap').count() === 1, 'فرم‌های مرخصی و جابه‌جایی نمایش داده می‌شود');
+  await staff.fill('#f-leave [name=from]', 'خراب'); await staff.fill('#f-leave [name=to]', dB); await staff.click('#f-leave button[type=submit]'); await sleep(300);
+  ok(/تاریخ را به شکل/.test(await text(staff, '#f-leave-msg')), 'تاریخ نامعتبر پیام می‌دهد');
+  await staff.fill('#f-leave [name=from]', dA); await staff.fill('#f-leave [name=note]', 'سفر'); await staff.click('#f-leave button[type=submit]'); await sleep(800);
+  ok(await staff.locator('.req-item').count() === 1 && /در انتظار تأیید مدیر/.test(await text(staff, '.req-item')), 'درخواست ثبت و در فهرست پرسنل دیده می‌شود');
+  await admin2.reload(); await sleep(700);
+  const badge = await text(admin2, 'nav.tabs [data-tab="req"]');
+  ok(/۱/.test(badge), 'نشان درخواست‌ها برای مدیر: ' + badge);
+  await admin2.click('[data-tab="req"]'); await sleep(500);
+  await admin2.fill('.req-reply', 'موافقم');
+  await admin2.click('[data-act="reqact"][data-a="approve"]'); await sleep(800);
+  ok(/تأیید شد/.test(await text(admin2, '.req-item')), 'مدیر درخواست را تأیید کرد');
+  await staff.click('[data-tab="req"]'); await sleep(600);
+  ok(/تأیید شد/.test(await text(staff, '.req-item')) && /موافقم/.test(await text(staff, '.req-item')), 'پرسنل نتیجه و پاسخ را می‌بیند');
+  await staff.click('[data-tab="pcal"]'); await sleep(600);
+  const jd = Core.todayJdn() + 5;
+  const got = await staff.evaluate(async (j) => (await (await fetch(`/api/assign?from=${j}&to=${j}`)).json()).assign, jd);
+  ok(Object.values(got).some((m) => m[jd] === 'LV'), 'مرخصی روی برنامهٔ فرد اعمال شد');
+  await staff.screenshot({ path: path.join(OUT, '9-staff-requests.png'), fullPage: true });
 
   // تم تاریک
   const dark = await newCtx({ colorScheme: 'dark' });

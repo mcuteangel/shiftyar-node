@@ -33,6 +33,18 @@ CREATE TABLE IF NOT EXISTS user_depts (
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL CHECK (kind IN ('leave','swap')),
+  person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+  peer_id TEXT REFERENCES people(id) ON DELETE CASCADE,
+  leave_code TEXT,
+  d1 INTEGER NOT NULL, d2 INTEGER NOT NULL,
+  note TEXT NOT NULL DEFAULT '', reply TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL CHECK (status IN ('pending','peer','manager','approved','rejected','declined','cancelled')),
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, decided_by TEXT NOT NULL DEFAULT '', decided_at INTEGER);
+CREATE INDEX IF NOT EXISTS requests_person ON requests(person_id, status);
+CREATE INDEX IF NOT EXISTS requests_peer ON requests(peer_id, status);
 CREATE TABLE IF NOT EXISTS log (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, user_id INTEGER, who TEXT NOT NULL DEFAULT '', text TEXT NOT NULL);
 `;

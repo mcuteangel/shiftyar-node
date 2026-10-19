@@ -196,3 +196,9 @@ fieldset { min-width: 0; }
 table.roster td.sum.ot, table.roster thead th.sum:last-child { position: sticky; left: 0; z-index: 2; border-right: 2px solid var(--line); background: var(--surface); }
 table.roster thead th.sum:last-child { z-index: 4; background: var(--surface2); }
 table.roster { width: 100%; }
+
+.badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-inline-start: 4px; border-radius: 9px; background: var(--accent); color: #fff; font-size: 11px; line-height: 18px; text-align: center; }
+.req-item { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.req-item[data-status="approved"] { border-inline-start: 3px solid #2e9e5b; }
+.req-item[data-status="rejected"], .req-item[data-status="declined"] { border-inline-start: 3px solid #c0392b; }
+.req-reply { flex: 1; min-width: 120px; }

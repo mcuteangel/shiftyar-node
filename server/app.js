@@ -448,7 +448,7 @@ function createApp(opts = {}) {
     return { version: syncConfig(ctx.user, clean) };
   });
 
-  route('GET', '/api/rev', 'full', () => ({ rev: DBM.getMeta(db, 'assign_rev', 1), version: DBM.getMeta(db, 'cfg_version', 1) }));
+  route('GET', '/api/rev', 'full', (ctx) => ({ rev: DBM.getMeta(db, 'assign_rev', 1), version: DBM.getMeta(db, 'cfg_version', 1), reqRev: DBM.getMeta(db, 'req_rev', 0), todo: todoCount(ctx.user) }));
   route('GET', '/api/assign', 'full', (ctx) => {
     const a = parseInt(ctx.url.searchParams.get('from'), 10), b = parseInt(ctx.url.searchParams.get('to'), 10);
     intIn(a, DAY_MIN, DAY_MAX, 'تاریخ شروع'); intIn(b, DAY_MIN, DAY_MAX, 'تاریخ پایان');
@@ -456,6 +456,176 @@ function createApp(opts = {}) {
     return { rev: DBM.getMeta(db, 'assign_rev', 1), assign: readAssign(ctx.user, a, b) };
   });
   route('POST', '/api/assign', 'manager', (ctx) => writeAssign(ctx.user, ctx.body.changes));
+
+  /* ---------- درخواست‌ها: مرخصی و جابه‌جایی شیفت ---------- */
+  const LEAVE_CODES = ['LV', 'LU', 'SK'];
+  const OPEN = ['pending', 'peer', 'manager'];
+  const personRow = (id) => q('SELECT id, first, last, dept_id FROM people WHERE id = ?').get(id);
+  const touchReq = () => DBM.bumpMeta(db, 'req_rev');
+  const assignCode = (pid, d) => { const r = q('SELECT code FROM assign WHERE person_id = ? AND day = ?').get(pid, d); return r ? r.code : null; };
+
+  /** مدیر سیستم همه؛ مدیر بخش فقط افراد بخش‌های خودش و نه درخواست خودش */
+  function canApprove(user, r) {
+    if (user.role === 'admin') return true;
+    if (user.role !== 'manager' || r.person_id === user.personId) return false;
+    const w = scope(user).write;
+    return w.has(r.person_id) && (!r.peer_id || w.has(r.peer_id));
+  }
+  function actionsFor(user, r) {
+    const out = [];
+    if (!OPEN.includes(r.status)) return out;
+    if (user.personId && r.person_id === user.personId) out.push('cancel');
+    if (r.kind === 'swap' && r.status === 'peer' && user.personId && r.peer_id === user.personId) out.push('accept', 'decline');
+    if ((r.status === 'pending' || r.status === 'manager') && canApprove(user, r)) out.push('approve', 'reject');
+    return out;
+  }
+  const REQ_SELECT = `SELECT r.*, p.first pf, p.last pl, e.first ef, e.last el FROM requests r
+    JOIN people p ON p.id = r.person_id LEFT JOIN people e ON e.id = r.peer_id`;
+  function serializeReq(user, r) {
+    return {
+      id: r.id, kind: r.kind, status: r.status, personId: r.person_id, personName: persName({ first: r.pf, last: r.pl }),
+      peerId: r.peer_id || null, peerName: r.peer_id ? persName({ first: r.ef, last: r.el }) : '',
+      code: r.leave_code || null, d1: r.d1, d2: r.d2, note: r.note, reply: r.reply, createdAt: r.created_at,
+      decidedBy: r.decided_by, decidedAt: r.decided_at, actions: actionsFor(user, r),
+    };
+  }
+  function visibleRequests(user, limit) {
+    let rows;
+    if (user.role === 'admin') rows = q(`${REQ_SELECT} ORDER BY r.id DESC LIMIT ?`).all(limit);
+    else {
+      const ids = new Set(scope(user).write);
+      if (user.personId) ids.add(user.personId);
+      if (!ids.size) return [];
+      const arr = Array.from(ids);
+      const ph = placeholders(arr.length);
+      rows = q(`${REQ_SELECT} WHERE r.person_id IN (${ph}) OR r.peer_id IN (${ph}) ORDER BY r.id DESC LIMIT ?`).all(...arr, ...arr, limit);
+    }
+    return rows.filter((r) => user.role === 'admin' || r.person_id === user.personId || r.peer_id === user.personId || canApprove(user, r) || (user.role === 'manager' && scope(user).write.has(r.person_id)));
+  }
+  function todoCount(user) {
+    let n = 0;
+    for (const r of visibleRequests(user, 500)) if (actionsFor(user, r).some((a) => a !== 'cancel')) n++;
+    return n;
+  }
+  const getReq = (user, id) => { const r = q(`${REQ_SELECT} WHERE r.id = ?`).get(id); return r ? serializeReq(user, r) : null; };
+
+  /** برنامهٔ جابه‌جایی را بازبینی می‌کند و فهرست نوشتن‌ها را برمی‌گرداند؛ در صورت ناممکن بودن bad پرتاب می‌کند */
+  function planSwap(aId, bId, d1, d2) {
+    const A = personRow(aId), B = personRow(bId);
+    if (!A || !B) throw bad('فرد پیدا نشد.');
+    const aName = persName(A), bName = persName(B);
+    const isWork = (c) => !!c && !Core.SPECIAL[c];
+    const free = (c) => !c || c === 'RS';
+    const aC = assignCode(aId, d1), bC = assignCode(bId, d2);
+    if (!isWork(aC)) throw bad(`${aName} در ${Core.fmtDate(d1)} شیفت کاری ندارد.`);
+    if (!isWork(bC)) throw bad(`${bName} در ${Core.fmtDate(d2)} شیفت کاری ندارد.`);
+    if (d1 === d2) {
+      if (aC === bC) throw bad('هر دو شیفت یکسان‌اند و جابه‌جایی لازم نیست.');
+      return [[aId, d1, bC], [bId, d1, aC]];
+    }
+    if (!free(assignCode(aId, d2))) throw bad(`${aName} در ${Core.fmtDate(d2)} خودش شیفت یا مرخصی دارد.`);
+    if (!free(assignCode(bId, d1))) throw bad(`${bName} در ${Core.fmtDate(d1)} خودش شیفت یا مرخصی دارد.`);
+    return [[aId, d1, null], [bId, d1, aC], [bId, d2, null], [aId, d2, bC]];
+  }
+  function applyWrites(writes) {
+    const up = q('INSERT INTO assign(person_id, day, code) VALUES(?, ?, ?) ON CONFLICT(person_id, day) DO UPDATE SET code = excluded.code');
+    const del = q('DELETE FROM assign WHERE person_id = ? AND day = ?');
+    for (const [pid, d, code] of writes) { if (code) up.run(pid, d, code); else del.run(pid, d); }
+    DBM.bumpMeta(db, 'assign_rev');
+  }
+
+  route('GET', '/api/peers', 'user', (ctx) => {
+    if (!ctx.user.personId) return { peers: [] };
+    const me = personRow(ctx.user.personId);
+    if (!me || !me.dept_id) return { peers: [] };
+    return { peers: q('SELECT id, first, last FROM people WHERE dept_id = ? AND id <> ? ORDER BY last, first').all(me.dept_id, me.id).map((p) => ({ id: p.id, name: persName(p) })) };
+  });
+  route('GET', '/api/requests', 'user', (ctx) => ({
+    requests: visibleRequests(ctx.user, 300).map((r) => serializeReq(ctx.user, r)),
+    reqRev: DBM.getMeta(db, 'req_rev', 0),
+  }));
+  route('POST', '/api/requests', 'user', (ctx) => {
+    const user = ctx.user;
+    if (!user.personId) throw bad('حساب شما به فردی در فهرست پرسنل وصل نیست. از مدیر سیستم بخواهید آن را وصل کند.');
+    const b = ctx.body, today = Core.todayJdn(), note = str(b.note, 300, 'توضیح');
+    const me = personRow(user.personId);
+    if (!me) throw bad('فرد پیدا نشد.');
+    let id;
+    if (b.kind === 'leave') {
+      if (!LEAVE_CODES.includes(b.code)) throw bad('نوع مرخصی نامعتبر است.');
+      const from = intIn(b.from, today - 31, today + 366, 'تاریخ شروع');
+      const to = intIn(b.to, from, from + 400, 'تاریخ پایان');
+      if (to - from > 59) throw bad('هر درخواست مرخصی حداکثر ۶۰ روز است.');
+      if (q("SELECT 1 FROM requests WHERE kind = 'leave' AND person_id = ? AND status IN ('pending','approved') AND d1 <= ? AND d2 >= ?").get(me.id, to, from)) {
+        throw bad('در این بازه قبلاً درخواست مرخصی ثبت کرده‌اید.');
+      }
+      id = DBM.tx(db, () => {
+        const r = q("INSERT INTO requests(kind, person_id, leave_code, d1, d2, note, status, created_at, updated_at) VALUES('leave', ?, ?, ?, ?, ?, 'pending', ?, ?)").run(me.id, b.code, from, to, note, now(), now());
+        touchReq();
+        writeLog(user, `درخواست ${Core.SPECIAL[b.code].name}: ${persName(me)} از ${Core.fmtDate(from)} تا ${Core.fmtDate(to)}`);
+        return r.lastInsertRowid;
+      });
+    } else if (b.kind === 'swap') {
+      if (typeof b.peerId !== 'string') throw bad('همکار را انتخاب کنید.');
+      const peer = personRow(b.peerId);
+      if (!peer || peer.id === me.id) throw bad('همکار انتخاب‌شده نامعتبر است.');
+      if (!me.dept_id || me.dept_id !== peer.dept_id) throw bad('جابه‌جایی فقط با همکارِ هم‌بخش ممکن است.');
+      const d1 = intIn(b.d1, today - 1, today + 366, 'روز شیفت شما');
+      const d2 = intIn(b.d2, today - 1, today + 366, 'روز شیفت همکار');
+      planSwap(me.id, peer.id, d1, d2);
+      const dup = q("SELECT 1 FROM requests WHERE kind = 'swap' AND status IN ('peer','manager') AND ((person_id = ? AND peer_id = ? AND d1 = ? AND d2 = ?) OR (person_id = ? AND peer_id = ? AND d1 = ? AND d2 = ?))")
+        .get(me.id, peer.id, d1, d2, peer.id, me.id, d2, d1);
+      if (dup) throw bad('همین جابه‌جایی قبلاً درخواست شده است.');
+      id = DBM.tx(db, () => {
+        const r = q("INSERT INTO requests(kind, person_id, peer_id, d1, d2, note, status, created_at, updated_at) VALUES('swap', ?, ?, ?, ?, ?, 'peer', ?, ?)").run(me.id, peer.id, d1, d2, note, now(), now());
+        touchReq();
+        writeLog(user, `درخواست جابه‌جایی شیفت: ${persName(me)} (${Core.fmtDate(d1)}) با ${persName(peer)} (${Core.fmtDate(d2)})`);
+        return r.lastInsertRowid;
+      });
+    } else throw bad('نوع درخواست نامعتبر است.');
+    return { request: getReq(user, id) };
+  });
+  route('POST', '/api/requests/(\\d+)/respond', 'user', (ctx) => {
+    const id = +ctx.params[0];
+    const action = ctx.body.action;
+    const reply = str(ctx.body.reply, 300, 'پاسخ');
+    if (!['accept', 'decline', 'approve', 'reject', 'cancel'].includes(action)) throw bad('اقدام نامعتبر است.');
+    if (!q('SELECT 1 FROM requests WHERE id = ?').get(id)) throw new HttpError(404, 'درخواست پیدا نشد.');
+    const who = ctx.user.display || ctx.user.code;
+    DBM.tx(db, () => {
+      const r = q('SELECT * FROM requests WHERE id = ?').get(id);
+      if (!actionsFor(ctx.user, r).includes(action)) throw new HttpError(403, 'این اقدام برای شما یا در وضعیت فعلی درخواست ممکن نیست.');
+      const A = personRow(r.person_id), B = r.peer_id ? personRow(r.peer_id) : null;
+      const label = r.kind === 'leave' ? `${Core.SPECIAL[r.leave_code].name} ${persName(A)} (${Core.fmtDate(r.d1)} تا ${Core.fmtDate(r.d2)})` : `جابه‌جایی ${persName(A)} و ${persName(B)}`;
+      const set = (status, extra) => {
+        q('UPDATE requests SET status = ?, reply = ?, updated_at = ?, decided_by = ?, decided_at = ? WHERE id = ?')
+          .run(status, extra ? reply : r.reply, now(), extra ? who : r.decided_by, extra ? now() : r.decided_at, id);
+      };
+      if (action === 'cancel') { set('cancelled', false); writeLog(ctx.user, `لغو درخواست: ${label}`); }
+      else if (action === 'decline') { set('declined', true); writeLog(ctx.user, `عدم پذیرش جابه‌جایی: ${label}`); }
+      else if (action === 'accept') { set('manager', false); writeLog(ctx.user, `پذیرش همکار: ${label}`); }
+      else if (action === 'reject') { set('rejected', true); writeLog(ctx.user, `رد درخواست: ${label}`); }
+      else {
+        if (r.kind === 'leave') {
+          const writes = [];
+          for (let d = r.d1; d <= r.d2; d++) writes.push([r.person_id, d, r.leave_code]);
+          applyWrites(writes);
+        } else {
+          let plan;
+          try { plan = planSwap(r.person_id, r.peer_id, r.d1, r.d2); }
+          catch (e) {
+            if (e instanceof HttpError && e.status === 400) throw new HttpError(409, 'تأیید ممکن نیست چون برنامه از زمان درخواست تغییر کرده است: ' + e.message);
+            throw e;
+          }
+          applyWrites(plan);
+        }
+        set('approved', true);
+        writeLog(ctx.user, `تأیید درخواست و اعمال روی برنامه: ${label}`);
+      }
+      touchReq();
+    });
+    return { request: getReq(ctx.user, id) };
+  });
 
   route('GET', '/api/log', 'admin', (ctx) => {
     const n = Math.min(500, Math.max(1, parseInt(ctx.url.searchParams.get('limit'), 10) || 100));

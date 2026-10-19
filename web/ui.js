@@ -104,15 +104,21 @@ const Store = {
   },
   async poll() {
     if (!ME.user || document.hidden || this.busy || this.pending.size || this.dirty.cfg || painting) return;
-    if (!['sched', 'pcal', 'rep'].includes(ui.tab)) return;
     const ae = document.activeElement;
     if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
     try {
       const r = await this.api('GET', '/api/rev');
-      if (r.rev === this.rev && r.version === this.cfgVersion) return;
+      const badgeChanged = r.todo !== reqState.todo;
+      reqState.todo = r.todo || 0;
+      const reqChanged = r.reqRev !== reqState.rev;
+      const schedTab = ['sched', 'pcal', 'rep'].includes(ui.tab);
+      const dataChanged = r.rev !== this.rev || r.version !== this.cfgVersion;
+      if (!(schedTab && dataChanged) && !(ui.tab === 'req' && reqChanged) && !badgeChanged) return;
       const keepTab = ui.tab;
-      if (r.version !== this.cfgVersion) await this.loadConfigServer();
-      this.rev = r.rev; this.loaded = new Set();
+      if (schedTab && dataChanged) {
+        if (r.version !== this.cfgVersion) await this.loadConfigServer();
+        this.rev = r.rev; this.loaded = new Set();
+      } else if (r.rev !== this.rev) { this.rev = r.rev; this.loaded = new Set(); }
       if (ui.tab === keepTab) await render();
     } catch (e) { /* در دور بعد دوباره */ }
   },
@@ -150,6 +156,7 @@ const Store = {
   async enterApp() {
     await this.loadConfigServer();
     if (ME.user.role === 'staff' && DB.cfg.people[0]) ui.pcalPerson = DB.cfg.people[0].id;
+    try { const r = await this.api('GET', '/api/rev'); reqState.todo = r.todo || 0; reqState.rev = r.reqRev; } catch (e) { /* نشان درخواست‌ها بعداً به‌روز می‌شود */ }
     this.startPolling();
   },
   async ensureMonth(jy, jm) {
@@ -816,12 +823,60 @@ function viewUsers() {
 
 /* ---------- رندر اصلی ---------- */
 const TABS = [['sched', 'برنامه شیفت'], ['pcal', 'تقویم فرد'], ['people', 'پرسنل'], ['depts', 'بخش‌ها'], ['shifts', 'شیفت‌ها'], ['hol', 'تعطیلات'], ['rep', 'گزارش‌ها'], ['set', 'تنظیمات و پشتیبان']];
+/* ---------- درخواست‌ها: مرخصی و جابه‌جایی ---------- */
+const reqState = { list: [], peers: [], todo: 0, rev: null, msg: '' };
+const REQ_STATUS = { pending: 'در انتظار تأیید مدیر', peer: 'در انتظار پذیرش همکار', manager: 'در انتظار تأیید مدیر', approved: 'تأیید شد', rejected: 'رد شد', declined: 'همکار نپذیرفت', cancelled: 'لغو شد' };
+const REQ_ACT = { cancel: 'لغو درخواست', accept: 'می‌پذیرم', decline: 'نمی‌پذیرم', approve: 'تأیید', reject: 'رد' };
+async function loadReqs() {
+  try {
+    const r = await Store.api('GET', '/api/requests');
+    reqState.list = r.requests; reqState.rev = r.reqRev;
+    reqState.todo = r.requests.filter((x) => x.actions.some((a) => a !== 'cancel')).length;
+    reqState.peers = ME.user.personId ? (await Store.api('GET', '/api/peers')).peers : [];
+  } catch (e) { reqState.msg = e.message; }
+}
+function reqRow(r) {
+  const what = r.kind === 'leave'
+    ? `${esc(SPECIAL[r.code].name)}: ${N(fmtDate(r.d1))}${r.d2 !== r.d1 ? ` تا ${N(fmtDate(r.d2))}` : ''}`
+    : `جابه‌جایی: شیفت ${esc(r.personName)} در ${N(fmtDate(r.d1))} ⇄ شیفت ${esc(r.peerName)} در ${N(fmtDate(r.d2))}`;
+  const btns = r.actions.map((a) => `<button class="btn sm${a === 'approve' || a === 'accept' ? ' primary' : ''}" data-act="reqact" data-id="${r.id}" data-a="${a}">${REQ_ACT[a]}</button>`).join('');
+  const needReply = r.actions.some((a) => a === 'approve' || a === 'reject' || a === 'decline');
+  return `<div class="panel req-item" data-status="${r.status}">
+    <div><b>${esc(r.personName)}</b> — ${what}</div>
+    <div class="note">${REQ_STATUS[r.status]}${r.decidedBy ? ` · ${esc(r.decidedBy)}` : ''}${r.note ? ` · توضیح: ${esc(r.note)}` : ''}${r.reply ? ` · پاسخ: ${esc(r.reply)}` : ''}</div>
+    ${btns ? `<div class="bar">${needReply ? `<input class="req-reply" id="rp-${r.id}" placeholder="پاسخ (اختیاری)" maxlength="300">` : ''}${btns}</div>` : ''}</div>`;
+}
+function viewReq() {
+  const me = ME.user, mine = !!me.personId;
+  const todo = reqState.list.filter((r) => r.actions.some((a) => a !== 'cancel'));
+  const rest = reqState.list.filter((r) => !todo.includes(r));
+  const forms = !mine ? `<div class="panel"><div class="note">این حساب به فردی در فهرست پرسنل وصل نیست و نمی‌تواند درخواست ثبت کند.</div></div>` : `
+    <form class="panel" id="f-leave" autocomplete="off"><h2>درخواست مرخصی</h2>
+      <label class="f">نوع<select name="code">${['LV', 'LU', 'SK'].map((c) => `<option value="${c}">${SPECIAL[c].name}</option>`).join('')}</select></label>
+      <label class="f">از تاریخ (مثلاً ۱۴۰۵/۰۷/۱۲)<input name="from" dir="ltr" required></label>
+      <label class="f">تا تاریخ<input name="to" dir="ltr" required></label>
+      <label class="f">توضیح<input name="note" maxlength="300"></label>
+      <div class="bar"><button class="btn primary" type="submit">ثبت درخواست</button><span id="f-leave-msg"></span></div></form>
+    <form class="panel" id="f-swap" autocomplete="off"><h2>جابه‌جایی شیفت با همکار</h2>
+      <label class="f">همکار<select name="peerId">${reqState.peers.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></label>
+      <label class="f">روز شیفت شما<input name="d1" dir="ltr" required></label>
+      <label class="f">روز شیفت همکار (اگر همان روز است، همان تاریخ را بنویسید)<input name="d2" dir="ltr" required></label>
+      <label class="f">توضیح<input name="note" maxlength="300"></label>
+      <div class="bar"><button class="btn primary" type="submit">ارسال برای همکار</button><span id="f-swap-msg"></span></div>
+      <div class="note">ابتدا همکار می‌پذیرد، سپس مدیر تأیید می‌کند و برنامه خودکار تغییر می‌کند.</div></form>`;
+  return `${reqState.msg ? `<div class="msg">${esc(reqState.msg)}</div>` : ''}
+    <div class="split"><div style="display:flex;flex-direction:column;gap:12px">${forms}</div>
+    <div style="min-width:0;display:flex;flex-direction:column;gap:10px">
+      <h2>نیازمند اقدام شما (${N(fa(todo.length))})</h2>${todo.map(reqRow).join('') || '<div class="note">موردی نیست.</div>'}
+      <h2>سایر درخواست‌ها</h2>${rest.map(reqRow).join('') || '<div class="note">درخواستی ثبت نشده است.</div>'}</div></div>`;
+}
 function tabsFor() {
   if (!isServer()) return TABS;
   const r = role(), acct = ['acct', 'حساب من'];
-  if (r === 'admin') return TABS.slice(0, 7).concat([['users', 'کاربران'], ['set', 'تنظیمات'], acct]);
-  if (r === 'manager') return [['sched', 'برنامه شیفت'], ['pcal', 'تقویم فرد'], ['rep', 'گزارش‌ها'], acct];
-  return [['pcal', 'برنامه من'], ['rep', 'گزارش من'], acct];
+  const rq = ['req', 'درخواست‌ها'];
+  if (r === 'admin') return TABS.slice(0, 7).concat([rq, ['users', 'کاربران'], ['set', 'تنظیمات'], acct]);
+  if (r === 'manager') return [['sched', 'برنامه شیفت'], ['pcal', 'تقویم فرد'], ['rep', 'گزارش‌ها'], rq, acct];
+  return [['pcal', 'برنامه من'], ['rep', 'گزارش من'], rq, acct];
 }
 let loginMsg = '';
 function sessionLost() {
@@ -849,14 +904,15 @@ async function render() {
   if (ui.tab === 'sched' || ui.tab === 'pcal') await Store.ensureRange(a, b);
   if (ui.tab === 'rep') { const r = repRange(); await Store.ensureRange(r.from, r.to); }
   if (ui.tab === 'users') await loadUsers();
+  if (ui.tab === 'req') await loadReqs();
   if (ui.tab === 'set' && isServer()) { try { DB.log = (await Store.api('GET', '/api/log?limit=100')).items; } catch (e) { DB.log = []; } }
   if (tok !== renderTok || (isServer() && !ME.user)) return;
-  const views = { sched: viewSched, pcal: viewPcal, people: viewPeople, depts: viewDepts, shifts: viewShifts, hol: viewHol, rep: viewRep, set: viewSet, acct: viewAcct, users: viewUsers };
+  const views = { sched: viewSched, pcal: viewPcal, people: viewPeople, depts: viewDepts, shifts: viewShifts, hol: viewHol, rep: viewRep, set: viewSet, acct: viewAcct, users: viewUsers, req: viewReq };
   const who = isServer() ? `<span class="note who">${esc(ME.user.display || ME.user.code)} · ${ROLE_NAMES[ME.user.role]}</span>` : '';
   app.innerHTML = `<div class="wrap">
     <div class="top"><div class="brand"><h1>شیفت‌یار</h1><small>برنامه‌ریز شیفت پرسنل</small></div>
       <div class="rows">${who}<span id="savestate" class="save ${Store.status}"><i></i><span>${esc(Store.statusText())}</span></span></div></div>
-    <nav class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${ui.tab === k}" data-tab="${k}">${l}</button>`).join('')}</nav>
+    <nav class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${ui.tab === k}" data-tab="${k}">${l}${k === 'req' && reqState.todo ? ` <span class="badge">${N(fa(reqState.todo))}</span>` : ''}</button>`).join('')}</nav>
     <div id="flash" aria-live="polite"></div>
     <main id="main" style="display:flex;flex-direction:column;gap:12px">${views[ui.tab]()}</main></div>`;
   if (ui.tab === 'shifts') shiftDraftPreview();
@@ -1052,6 +1108,12 @@ document.addEventListener('click', async (e) => {
       ui.undo = []; usersState.list = []; usersState.edit = null; usersState.notice = ''; loginMsg = '';
       return render();
     }
+    case 'reqact': {
+      const a = t.dataset.a, rp = $('#rp-' + id);
+      try { await Store.api('POST', `/api/requests/${id}/respond`, { action: a, reply: rp ? rp.value : '' }); reqState.msg = ''; if (a === 'approve') Store.loaded = new Set(); }
+      catch (err) { reqState.msg = err.message; }
+      return render();
+    }
     case 'dismissnotice': usersState.notice = ''; return render();
     case 'edituser': usersState.edit = usersState.list.find((u) => u.id === +id) || null; return render();
     case 'canceluser': usersState.edit = null; return render();
@@ -1167,7 +1229,7 @@ document.addEventListener('input', (e) => {
 /* ---------- فرم‌های ورود، گذرواژه و کاربران (حالت سرور) ---------- */
 document.addEventListener('submit', async (e) => {
   const f = e.target;
-  if (!['f-login', 'f-pw', 'f-user'].includes(f.id)) return;
+  if (!['f-login', 'f-pw', 'f-user', 'f-leave', 'f-swap'].includes(f.id)) return;
   e.preventDefault();
   const fd = new FormData(f);
   const btn = f.querySelector('button[type=submit]');
@@ -1191,6 +1253,14 @@ document.addEventListener('submit', async (e) => {
         if (force) { ME.user.mustChange = false; await Store.enterApp(); ui.tab = tabsFor()[0][0]; loginMsg = ''; await render(); flash('گذرواژهٔ جدید ذخیره شد.', true); }
         else { f.reset(); flash('گذرواژه تغییر کرد.', true, '#f-pw-msg'); }
       } catch (err) { await fail(err.message); }
+    } else if (f.id === 'f-leave' || f.id === 'f-swap') {
+      const msg = '#' + f.id + '-msg', dt = (k) => parseDate(String(fd.get(k) || ''));
+      const body = f.id === 'f-leave'
+        ? { kind: 'leave', code: fd.get('code'), from: dt('from'), to: dt('to'), note: String(fd.get('note') || '') }
+        : { kind: 'swap', peerId: fd.get('peerId'), d1: dt('d1'), d2: dt('d2'), note: String(fd.get('note') || '') };
+      if (Object.values(body).some((v) => v === null)) return flash('تاریخ را به شکل ۱۴۰۵/۰۷/۱۲ وارد کنید.', false, msg);
+      try { await Store.api('POST', '/api/requests', body); reqState.msg = ''; await render(); flash('درخواست ثبت شد.', true, msg); }
+      catch (err) { flash(err.message, false, msg); }
     } else if (f.id === 'f-user') {
       const role_ = fd.get('role');
       const body = {
