@@ -28,6 +28,7 @@ const STATIC = {
   '/fonts.css': ['fonts.css', 'text/css; charset=utf-8'],
   '/core.js': ['core.js', 'text/javascript; charset=utf-8'],
   '/ui.js': ['ui.js', 'text/javascript; charset=utf-8'],
+  '/export.js': ['export.js', 'text/javascript; charset=utf-8'],
   '/favicon.svg': ['favicon.svg', 'image/svg+xml'],
 };
 const FONT_RE = /^\/fonts\/[A-Za-z0-9._-]+\.woff2$/;

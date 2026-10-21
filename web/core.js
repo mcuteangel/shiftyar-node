@@ -304,11 +304,95 @@
     return '';
   }
 
+
+  /* ---------- پیشنهاد خودکار برنامه ---------- */
+  /**
+   * خانه‌های خالی را با شیفت پر می‌کند؛ هیچ خانهٔ پرشده‌ای را تغییر نمی‌دهد.
+   * o: { people: [id], a, b, need: {کد شیفت: تعداد در هر روز}, maxConsec, capMin }
+   * خروجی: { changes: [{pid, j, code}], unfilled: [{j, code, missing}], summary: [{pid, load, target}] }
+   * قیدها: حداقل فاصلهٔ بین شیفت‌ها، حداکثر روز کاریِ پشت‌سرهم، سقف اضافه‌کار؛ تراز بار با کمترین کارکرد نسبت به موظفی.
+   */
+  function suggestSchedule(db, o) {
+    const S = db.settings, shifts = db.shifts;
+    const hm = holidayMap(S, db.holidays, o.a, o.b);
+    const restMin = (S.minRestH || 0) * 60;
+    const maxConsec = o.maxConsec > 0 ? o.maxConsec : 6;
+    const days = o.b - o.a + 1;
+    let holN = 0; for (let j = o.a; j <= o.b; j++) if (hm[j]) holN++;
+    const target = (days - holN) * S.dutyMin;
+    const cap = o.capMin > 0 ? o.capMin : 0;
+    const people = (o.people || []).map((id) => db.people.find((p) => p.id === id)).filter(Boolean);
+    const work = {}, load = {}, cnt = {};
+    const isWork = (c) => !!c && !SPECIAL[c];
+    const iv = {};
+    const info = (code) => {
+      if (!iv[code]) { const x = shiftIvs(shifts, code); iv[code] = x.length ? { s: x[0][0], e: x[x.length - 1][1], m: ivsMinutes(x) } : null; }
+      return iv[code];
+    };
+    const minutesOn = (p, j, code) => {
+      const x = info(code); if (!x) return 0;
+      const f = hm[j] && S.factors ? (S.factors[p.contract] || 1) : 1;
+      return x.m * f;
+    };
+    for (const p of people) {
+      work[p.id] = Object.assign({}, (db.assign && db.assign[p.id]) || {});
+      load[p.id] = 0; cnt[p.id] = {};
+      for (let j = o.a; j <= o.b; j++) {
+        const c = work[p.id][j];
+        if (isWork(c)) { load[p.id] += minutesOn(p, j, c); cnt[p.id][c] = (cnt[p.id][c] || 0) + 1; }
+        else if (c && SPECIAL[c].credit && !hm[j]) load[p.id] += S.dutyMin;
+      }
+    }
+    const fits = (pid, j, code) => {
+      const mine = work[pid], x = info(code);
+      if (!x) return false;
+      const s0 = j * 1440 + x.s, e0 = j * 1440 + x.e;
+      for (let k = j - 3; k <= j + 3; k++) {
+        if (k === j || !isWork(mine[k])) continue;
+        const y = info(mine[k]); if (!y) continue;
+        const ns = k * 1440 + y.s, ne = k * 1440 + y.e;
+        const gap = k < j ? s0 - ne : ns - e0;
+        if (gap < restMin) return false;
+      }
+      let run = 1;
+      for (let k = j - 1; isWork(mine[k]); k--) run++;
+      for (let k = j + 1; isWork(mine[k]); k++) run++;
+      return run <= maxConsec;
+    };
+    const codes = Object.keys(o.need || {}).filter((c) => o.need[c] > 0 && info(c)).sort((x, y) => info(y).m - info(x).m);
+    const changes = [], unfilled = [];
+    for (let j = o.a; j <= o.b; j++) {
+      const cover = {};
+      for (const p of people) { const c = work[p.id][j]; if (isWork(c)) cover[c] = (cover[c] || 0) + 1; }
+      for (const code of codes) {
+        let missing = o.need[code] - (cover[code] || 0);
+        while (missing > 0) {
+          let best = null, bs = null;
+          for (let i = 0; i < people.length; i++) {
+            const p = people[i];
+            if (work[p.id][j]) continue;
+            const m = minutesOn(p, j, code);
+            if (cap > 0 || o.capMin === 0) { if (load[p.id] + m > target + cap) continue; }
+            if (!fits(p.id, j, code)) continue;
+            const sc = [load[p.id], cnt[p.id][code] || 0, i];
+            if (!bs || sc[0] < bs[0] || (sc[0] === bs[0] && (sc[1] < bs[1] || (sc[1] === bs[1] && sc[2] < bs[2])))) { best = p; bs = sc; }
+          }
+          if (!best) { unfilled.push({ j, code, missing }); break; }
+          work[best.id][j] = code; load[best.id] += minutesOn(best, j, code);
+          cnt[best.id][code] = (cnt[best.id][code] || 0) + 1;
+          changes.push({ pid: best.id, j, code });
+          missing--;
+        }
+      }
+    }
+    return { changes, unfilled, summary: people.map((p) => ({ pid: p.id, load: Math.round(load[p.id]), target })) };
+  }
+
   const Core = {
     div, mod, g2d, d2g, j2d, d2j, isLeap, monthLen, weekdayOf, todayJdn,
     MONTHS, WD_SHORT, WD_FULL, FA, fa, toLatin, pad2, fmtHM, fmtHMlatin, fmtDate, fmtDateLatin, parseDate, toMin,
     SPECIAL, CONTRACTS, defaultShifts, defaultHolidays, defaultSettings,
-    mergeIv, shiftIvs, ivsMinutes, shiftMinutes, ivText, holidayInfo, holidayMap, computeRange, restIssues, validateShift,
+    mergeIv, shiftIvs, ivsMinutes, shiftMinutes, ivText, holidayInfo, holidayMap, computeRange, restIssues, validateShift, suggestSchedule,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = Core;
   else root.Core = Core;

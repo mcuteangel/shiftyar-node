@@ -203,6 +203,38 @@ table.roster td.sum.ot, table.roster thead th.sum:last-child { position: sticky;
 table.roster thead th.sum:last-child { z-index: 4; background: var(--surface2); }
 table.roster { width: 100%; }
 
+.badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-inline-start: 4px; border-radius: 9px; background: var(--accent); color: #fff; font-size: 11px; line-height: 18px; text-align: center; }
+.req-item { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.req-item[data-status="approved"] { border-inline-start: 3px solid #2e9e5b; }
+.req-item[data-status="rejected"], .req-item[data-status="declined"] { border-inline-start: 3px solid #c0392b; }
+.req-reply { flex: 1; min-width: 120px; }
+
+#dp { position: absolute; z-index: 60; width: 288px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.22); padding: 10px; }
+#dp .dph { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-bottom: 6px; }
+#dp .dpg { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; }
+#dp .dpg i { font-style: normal; font-size: 11px; color: var(--muted); padding: 2px 0; }
+#dp .dpd { border: 0; background: transparent; color: var(--ink); border-radius: 6px; min-height: 34px; font: inherit; cursor: pointer; }
+#dp .dpd:hover { background: var(--surface2); }
+#dp .dpd.hol { color: var(--hol-ink, #c0392b); }
+#dp .dpd.today { outline: 1px solid var(--accent); }
+#dp .dpd.sel { background: var(--accent); color: #fff; }
+#dp .dpf { display: flex; justify-content: space-between; margin-top: 8px; }
+#printarea { display: none; }
+@media print {
+  @page { size: A4 landscape; margin: 10mm; }
+  body.printing > *:not(#printarea) { display: none !important; }
+  body.printing #printarea { display: block; color: #000; background: #fff; }
+  body.printing { background: #fff !important; }
+  #printarea h1 { font-size: 18px; margin: 0 0 2px; }
+  #printarea .psub { font-size: 12px; margin-bottom: 8px; color: #444; }
+  #printarea, #printarea * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  #printarea .rwrap, #printarea .tw { overflow: visible !important; max-height: none !important; }
+  #printarea table { width: 100%; font-size: 9px; border-collapse: collapse; }
+  #printarea th, #printarea td { position: static !important; border: 1px solid #aaa; padding: 2px 3px; }
+  #printarea tr { break-inside: avoid; }
+  #printarea .legend { font-size: 10px; margin-top: 8px; }
+}
+
 </style>
 <div id="app"></div>
 <script>
@@ -512,14 +544,182 @@ table.roster { width: 100%; }
     return '';
   }
 
+
+  /* ---------- پیشنهاد خودکار برنامه ---------- */
+  /**
+   * خانه‌های خالی را با شیفت پر می‌کند؛ هیچ خانهٔ پرشده‌ای را تغییر نمی‌دهد.
+   * o: { people: [id], a, b, need: {کد شیفت: تعداد در هر روز}, maxConsec, capMin }
+   * خروجی: { changes: [{pid, j, code}], unfilled: [{j, code, missing}], summary: [{pid, load, target}] }
+   * قیدها: حداقل فاصلهٔ بین شیفت‌ها، حداکثر روز کاریِ پشت‌سرهم، سقف اضافه‌کار؛ تراز بار با کمترین کارکرد نسبت به موظفی.
+   */
+  function suggestSchedule(db, o) {
+    const S = db.settings, shifts = db.shifts;
+    const hm = holidayMap(S, db.holidays, o.a, o.b);
+    const restMin = (S.minRestH || 0) * 60;
+    const maxConsec = o.maxConsec > 0 ? o.maxConsec : 6;
+    const days = o.b - o.a + 1;
+    let holN = 0; for (let j = o.a; j <= o.b; j++) if (hm[j]) holN++;
+    const target = (days - holN) * S.dutyMin;
+    const cap = o.capMin > 0 ? o.capMin : 0;
+    const people = (o.people || []).map((id) => db.people.find((p) => p.id === id)).filter(Boolean);
+    const work = {}, load = {}, cnt = {};
+    const isWork = (c) => !!c && !SPECIAL[c];
+    const iv = {};
+    const info = (code) => {
+      if (!iv[code]) { const x = shiftIvs(shifts, code); iv[code] = x.length ? { s: x[0][0], e: x[x.length - 1][1], m: ivsMinutes(x) } : null; }
+      return iv[code];
+    };
+    const minutesOn = (p, j, code) => {
+      const x = info(code); if (!x) return 0;
+      const f = hm[j] && S.factors ? (S.factors[p.contract] || 1) : 1;
+      return x.m * f;
+    };
+    for (const p of people) {
+      work[p.id] = Object.assign({}, (db.assign && db.assign[p.id]) || {});
+      load[p.id] = 0; cnt[p.id] = {};
+      for (let j = o.a; j <= o.b; j++) {
+        const c = work[p.id][j];
+        if (isWork(c)) { load[p.id] += minutesOn(p, j, c); cnt[p.id][c] = (cnt[p.id][c] || 0) + 1; }
+        else if (c && SPECIAL[c].credit && !hm[j]) load[p.id] += S.dutyMin;
+      }
+    }
+    const fits = (pid, j, code) => {
+      const mine = work[pid], x = info(code);
+      if (!x) return false;
+      const s0 = j * 1440 + x.s, e0 = j * 1440 + x.e;
+      for (let k = j - 3; k <= j + 3; k++) {
+        if (k === j || !isWork(mine[k])) continue;
+        const y = info(mine[k]); if (!y) continue;
+        const ns = k * 1440 + y.s, ne = k * 1440 + y.e;
+        const gap = k < j ? s0 - ne : ns - e0;
+        if (gap < restMin) return false;
+      }
+      let run = 1;
+      for (let k = j - 1; isWork(mine[k]); k--) run++;
+      for (let k = j + 1; isWork(mine[k]); k++) run++;
+      return run <= maxConsec;
+    };
+    const codes = Object.keys(o.need || {}).filter((c) => o.need[c] > 0 && info(c)).sort((x, y) => info(y).m - info(x).m);
+    const changes = [], unfilled = [];
+    for (let j = o.a; j <= o.b; j++) {
+      const cover = {};
+      for (const p of people) { const c = work[p.id][j]; if (isWork(c)) cover[c] = (cover[c] || 0) + 1; }
+      for (const code of codes) {
+        let missing = o.need[code] - (cover[code] || 0);
+        while (missing > 0) {
+          let best = null, bs = null;
+          for (let i = 0; i < people.length; i++) {
+            const p = people[i];
+            if (work[p.id][j]) continue;
+            const m = minutesOn(p, j, code);
+            if (cap > 0 || o.capMin === 0) { if (load[p.id] + m > target + cap) continue; }
+            if (!fits(p.id, j, code)) continue;
+            const sc = [load[p.id], cnt[p.id][code] || 0, i];
+            if (!bs || sc[0] < bs[0] || (sc[0] === bs[0] && (sc[1] < bs[1] || (sc[1] === bs[1] && sc[2] < bs[2])))) { best = p; bs = sc; }
+          }
+          if (!best) { unfilled.push({ j, code, missing }); break; }
+          work[best.id][j] = code; load[best.id] += minutesOn(best, j, code);
+          cnt[best.id][code] = (cnt[best.id][code] || 0) + 1;
+          changes.push({ pid: best.id, j, code });
+          missing--;
+        }
+      }
+    }
+    return { changes, unfilled, summary: people.map((p) => ({ pid: p.id, load: Math.round(load[p.id]), target })) };
+  }
+
   const Core = {
     div, mod, g2d, d2g, j2d, d2j, isLeap, monthLen, weekdayOf, todayJdn,
     MONTHS, WD_SHORT, WD_FULL, FA, fa, toLatin, pad2, fmtHM, fmtHMlatin, fmtDate, fmtDateLatin, parseDate, toMin,
     SPECIAL, CONTRACTS, defaultShifts, defaultHolidays, defaultSettings,
-    mergeIv, shiftIvs, ivsMinutes, shiftMinutes, ivText, holidayInfo, holidayMap, computeRange, restIssues, validateShift,
+    mergeIv, shiftIvs, ivsMinutes, shiftMinutes, ivText, holidayInfo, holidayMap, computeRange, restIssues, validateShift, suggestSchedule,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = Core;
   else root.Core = Core;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
+<script>
+/* خروجی Excel (xlsx) بدون هیچ کتابخانهٔ بیرونی: فایل zip بدون فشرده‌سازی + XML */
+(function (root) {
+  'use strict';
+  const enc = new TextEncoder();
+  let TABLE = null;
+  function crc32(buf) {
+    if (!TABLE) { TABLE = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; TABLE[n] = c >>> 0; } }
+    let c = 0xFFFFFFFF;
+    for (let i = 0; i < buf.length; i++) c = TABLE[(c ^ buf[i]) & 255] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+  /** files: [{name, data: Uint8Array|string}] → Uint8Array (zip، روش STORE) */
+  function zip(files) {
+    const parts = [], central = [];
+    let off = 0;
+    const u16 = (v) => [v & 255, (v >>> 8) & 255], u32 = (v) => [v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255];
+    for (const f of files) {
+      const name = enc.encode(f.name), data = typeof f.data === 'string' ? enc.encode(f.data) : f.data, crc = crc32(data);
+      const head = Uint8Array.from([0x50, 0x4b, 3, 4, 20, 0, 0, 8, 0, 0, 0, 0, 33, 0, ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(name.length), 0, 0]);
+      parts.push(head, name, data);
+      central.push(Uint8Array.from([0x50, 0x4b, 1, 2, 20, 0, 20, 0, 0, 8, 0, 0, 0, 0, 33, 0, ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(name.length), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ...u32(off)]), name);
+      off += head.length + name.length + data.length;
+    }
+    const cdSize = central.reduce((s, x) => s + x.length, 0);
+    const end = Uint8Array.from([0x50, 0x4b, 5, 6, 0, 0, 0, 0, ...u16(files.length), ...u16(files.length), ...u32(cdSize), ...u32(off), 0, 0]);
+    const all = parts.concat(central, [end]);
+    const out = new Uint8Array(all.reduce((s, x) => s + x.length, 0));
+    let p = 0; for (const x of all) { out.set(x, p); p += x.length; }
+    return out;
+  }
+  const esc = (s) => String(s).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const colName = (i) => { let s = ''; for (i++; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + ((i - 1) % 26)) + s; return s; };
+  /** سبک‌ها: 0 معمولی، 1 سرستون، 2 عدد اعشاری، 3 وسط‌چین، 4 سرستونِ تعطیل، 5 خانهٔ تعطیل، 6 جمع (پررنگ) */
+  const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<numFmts count="1"><numFmt numFmtId="164" formatCode="0.00"/></numFmts>
+<fonts count="2"><font><sz val="11"/><name val="Tahoma"/></font><font><b/><sz val="11"/><name val="Tahoma"/></font></fonts>
+<fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFE6EAF0"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFF8D7D2"/></patternFill></fill>
+<fill><patternFill patternType="solid"><fgColor rgb="FFFBEDEA"/></patternFill></fill></fills>
+<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>
+<border><left style="thin"><color rgb="FFBBBBBB"/></left><right style="thin"><color rgb="FFBBBBBB"/></right><top style="thin"><color rgb="FFBBBBBB"/></top><bottom style="thin"><color rgb="FFBBBBBB"/></bottom><diagonal/></border></borders>
+<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+<cellXfs count="7">
+<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>
+<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
+<xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>
+<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>
+<xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
+<xf numFmtId="0" fontId="0" fillId="4" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>
+<xf numFmtId="164" fontId="1" fillId="2" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>
+</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+  /**
+   * sheets: [{name, rows: [[cell]], widths?: [number], freeze?: {rows, cols}}]
+   * cell: عدد | رشته | {v, s} که s شمارهٔ سبک است (عدد پیش‌فرض: ۲، رشته: ۰)
+   */
+  function xlsx(sheets) {
+    const files = [];
+    files.push({ name: '[Content_Types].xml', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>` });
+    files.push({ name: '_rels/.rels', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' });
+    files.push({ name: 'xl/workbook.xml', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets.map((s, i) => `<sheet name="${esc(s.name.replace(/[:\\/?*\[\]]/g, ' ').slice(0, 31))}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets></workbook>` });
+    files.push({ name: 'xl/_rels/workbook.xml.rels', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>` });
+    files.push({ name: 'xl/styles.xml', data: STYLES });
+    sheets.forEach((sh, i) => {
+      const fr = sh.freeze || { rows: 1, cols: 0 };
+      const pane = fr.rows || fr.cols ? `<pane${fr.cols ? ` xSplit="${fr.cols}"` : ''}${fr.rows ? ` ySplit="${fr.rows}"` : ''} topLeftCell="${colName(fr.cols)}${fr.rows + 1}" activePane="${fr.rows && fr.cols ? 'bottomRight' : fr.rows ? 'bottomLeft' : 'topRight'}" state="frozen"/>` : '';
+      const cols = (sh.widths || []).map((w, k) => `<col min="${k + 1}" max="${k + 1}" width="${w}" customWidth="1"/>`).join('');
+      const rows = sh.rows.map((row, r) => `<row r="${r + 1}">${row.map((c, k) => {
+        if (c == null || c === '') return '';
+        const v = typeof c === 'object' ? c.v : c, st = typeof c === 'object' && c.s != null ? c.s : (typeof v === 'number' ? 2 : 0);
+        const ref = colName(k) + (r + 1);
+        return typeof v === 'number' ? `<c r="${ref}" s="${st}"><v>${v}</v></c>` : `<c r="${ref}" s="${st}" t="inlineStr"><is><t xml:space="preserve">${esc(v)}</t></is></c>`;
+      }).join('')}</row>`).join('');
+      files.push({ name: `xl/worksheets/sheet${i + 1}.xml`, data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView rightToLeft="1" workbookViewId="0"${i === 0 ? ' tabSelected="1"' : ''}>${pane}</sheetView></sheetViews>${cols ? `<cols>${cols}</cols>` : ''}<sheetData>${rows}</sheetData></worksheet>` });
+    });
+    return zip(files);
+  }
+  const Exporter = { crc32, zip, xlsx, colName };
+  if (typeof module !== 'undefined' && module.exports) module.exports = Exporter;
+  else root.Exporter = Exporter;
 })(typeof window !== 'undefined' ? window : globalThis);
 
 </script>
@@ -572,7 +772,7 @@ function normalizeCfg(c) {
     sample: !!c.sample,
   };
 }
-const dbv = () => ({ settings: DB.cfg.settings, holidays: DB.cfg.holidays, shifts: DB.cfg.shifts, assign: DB.assign });
+const dbv = () => ({ settings: DB.cfg.settings, holidays: DB.cfg.holidays, shifts: DB.cfg.shifts, assign: DB.assign, people: DB.cfg.people });
 const person = (id) => DB.cfg.people.find((p) => p.id === id);
 const dept = (id) => DB.cfg.depts.find((d) => d.id === id);
 const pname = (p) => `${p.first || ''} ${p.last || ''}`.trim() || 'بدون نام';
@@ -630,15 +830,21 @@ const Store = {
   },
   async poll() {
     if (!ME.user || document.hidden || this.busy || this.pending.size || this.dirty.cfg || painting) return;
-    if (!['sched', 'pcal', 'rep'].includes(ui.tab)) return;
     const ae = document.activeElement;
     if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
     try {
       const r = await this.api('GET', '/api/rev');
-      if (r.rev === this.rev && r.version === this.cfgVersion) return;
+      const badgeChanged = r.todo !== reqState.todo;
+      reqState.todo = r.todo || 0;
+      const reqChanged = r.reqRev !== reqState.rev;
+      const schedTab = ['sched', 'pcal', 'rep'].includes(ui.tab);
+      const dataChanged = r.rev !== this.rev || r.version !== this.cfgVersion;
+      if (!(schedTab && dataChanged) && !(ui.tab === 'req' && reqChanged) && !badgeChanged) return;
       const keepTab = ui.tab;
-      if (r.version !== this.cfgVersion) await this.loadConfigServer();
-      this.rev = r.rev; this.loaded = new Set();
+      if (schedTab && dataChanged) {
+        if (r.version !== this.cfgVersion) await this.loadConfigServer();
+        this.rev = r.rev; this.loaded = new Set();
+      } else if (r.rev !== this.rev) { this.rev = r.rev; this.loaded = new Set(); }
       if (ui.tab === keepTab) await render();
     } catch (e) { /* در دور بعد دوباره */ }
   },
@@ -676,6 +882,7 @@ const Store = {
   async enterApp() {
     await this.loadConfigServer();
     if (ME.user.role === 'staff' && DB.cfg.people[0]) ui.pcalPerson = DB.cfg.people[0].id;
+    try { const r = await this.api('GET', '/api/rev'); reqState.todo = r.todo || 0; reqState.rev = r.reqRev; } catch (e) { /* نشان درخواست‌ها بعداً به‌روز می‌شود */ }
     this.startPolling();
   },
   async ensureMonth(jy, jm) {
@@ -976,10 +1183,12 @@ function viewSched() {
           <select id="copy-src"><option value="7">۷ روز قبل (هفتگی)</option><option value="14">۱۴ روز قبل</option><option value="28">۲۸ روز قبل</option><option value="pm">همان تاریخِ ماه قبل</option></select></label>
         <button class="btn" data-act="copypat" data-confirm="خانه‌های این ماه رونویسی می‌شوند. تأیید؟">اعمال</button>
         <span class="sp"></span>
+        ${canEdit() ? '<button class="btn" data-act="autoopen">پیشنهاد خودکار</button>' : ''}${exportBtns('sched')}
         <button class="btn danger" data-act="clearmonth" data-confirm="برنامهٔ این ماه پاک شود؟">پاک‌کردن ماه</button>
       </div>
       <div class="note">با قلم انتخاب‌شده روی خانه‌ها بکشید یا کلیک کنید. کلیک دوباره روی خانه‌ای با همان مقدار، آن را پاک می‌کند. ستون‌های قرمز تعطیل‌اند.</div>
     </div>
+    ${autoState.open && canEdit() ? autoPanel() : ''}
     ${ps.length ? `<div class="rwrap"><table class="roster" id="roster"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`
       : `<div class="panel empty"><b>هنوز پرسنلی در این نما نیست</b><span>از تب «پرسنل» نفرات را اضافه کنید، سپس اینجا شیفت‌ها را بکشید.</span><button class="btn primary" data-tab="people">رفتن به پرسنل</button></div>`}
     ${legend}<div id="side" class="rows" style="flex-direction:column;align-items:stretch;gap:8px">${sideHtml(ps, ctx)}</div>`;
@@ -1198,15 +1407,15 @@ function viewRep() {
       ${R.shiftCols.map((c) => `<td class="n">${g.counts[c] ? fa(g.counts[c]) : '·'}</td>`).join('')}</tr>`;
   }).join('');
   return `<div class="panel"><div class="bar">
-      <label class="f">از تاریخ<input type="text" id="rep-from" dir="ltr" size="11" value="${fmtDateLatin(R.from)}"></label>
-      <label class="f">تا تاریخ<input type="text" id="rep-to" dir="ltr" size="11" value="${fmtDateLatin(R.to)}"></label>
+      <label class="f">از تاریخ<input type="text" id="rep-from" data-dp dir="ltr" size="11" value="${fmtDateLatin(R.from)}"></label>
+      <label class="f">تا تاریخ<input type="text" id="rep-to" data-dp dir="ltr" size="11" value="${fmtDateLatin(R.to)}"></label>
       ${role() === 'staff' ? '' : `<label class="f">بخش${deptSelect('rep-dept', ui.rep.dept, true)}</label>`}
       <button class="btn primary" data-act="repgo" style="align-self:flex-end">نمایش</button>
       <span class="sp"></span>
       <button class="btn sm" data-act="repmonth" style="align-self:flex-end">ماهِ انتخاب‌شده</button>
       <button class="btn sm" data-act="repweek" style="align-self:flex-end">هفتهٔ جاری</button>
       <button class="btn sm" data-act="reptoday" style="align-self:flex-end">امروز</button>
-      <button class="btn" data-act="repcsv" style="align-self:flex-end">خروجی CSV (برای Excel)</button></div>
+      <span class="rows" style="align-self:flex-end;gap:6px">${exportBtns('rep')}<button class="btn" data-act="repcsv">CSV</button></span></div>
     <div class="note">بازه: ${N(fmtDate(R.from))} تا ${N(fmtDate(R.to))} (${N(fa(days))} روز). موظفی هر نفر برای این بازه: ${hmH((days - Object.values(R.hm).filter(Boolean).length) * DB.cfg.settings.dutyMin)}.
     تاریخ را به شکل ۱۴۰۵/۰۷/۲۵ بنویسید.</div><div id="rep-msg"></div></div>
     ${R.rows.length ? `<div class="tw"><table class="t"><thead><tr>${head}</tr></thead><tbody>${body}</tbody><tfoot>${foot}</tfoot></table></div>
@@ -1225,6 +1434,161 @@ function csvText() {
       .concat(R.shiftCols.map((c) => r.counts[c] || 0)).concat(R.spCols.map((c) => r.counts[c] || 0)).map(q).join(','));
   });
   return { name: `report-${fmtDateLatin(R.from).replace(/\//g, '')}-${fmtDateLatin(R.to).replace(/\//g, '')}.csv`, text: '﻿' + lines.join('\r\n') };
+}
+
+/* ---------- خروجی Excel و چاپ/PDF ---------- */
+const hrs = (m) => Math.round(m / 60 * 100) / 100;
+function xlsxReport() {
+  const R = buildReport();
+  const hd = (t, s) => ({ v: t, s: s == null ? 1 : s });
+  const head = ['کد پرسنلی', 'نام', 'بخش', 'قرارداد', 'موظفی (ساعت)', 'کارکرد واقعی (ساعت)', 'با ضریب (ساعت)', 'اعتبار مرخصی (ساعت)', 'اضافه/کسر (ساعت)']
+    .concat(R.shiftCols.map((c) => 'تعداد ' + c)).concat(R.spCols.map((c) => SPECIAL[c].name)).map((t) => hd(t));
+  const rows = [head];
+  const tot = [0, 0, 0, 0, 0];
+  R.rows.forEach(({ p, r }) => {
+    const v = [r.duty, r.actual, r.weighted, r.credit, r.overtime]; v.forEach((x, i) => { tot[i] += x; });
+    rows.push([p.code || '', pname(p), (dept(p.deptId) || {}).name || '', CONTRACTS[p.contract] || ''].concat(v.map(hrs))
+      .concat(R.shiftCols.map((c) => ({ v: r.counts[c] || 0, s: 3 }))).concat(R.spCols.map((c) => ({ v: r.counts[c] || 0, s: 3 }))));
+  });
+  rows.push([hd('جمع', 6), '', '', ''].concat(tot.map((x) => ({ v: hrs(x), s: 6 }))));
+  const sheets = [{ name: 'گزارش', rows, widths: [12, 22, 16, 11, 13, 15, 13, 15, 14].concat(R.shiftCols.concat(R.spCols).map(() => 10)), freeze: { rows: 1, cols: 2 } }];
+  sheets.push({ name: 'راهنما', rows: [[hd('بازه')], [`${fmtDateLatin(R.from)} تا ${fmtDateLatin(R.to)}`], [''], [hd('توضیح')], ['ستون‌های زمانی بر حسب ساعت اعشاری‌اند (۷:۲۰ = ۷٫۳۳). «با ضریب» شامل ضریب تعطیلی قراردادها است.']], widths: [70], freeze: { rows: 0, cols: 0 } });
+  return { name: `report-${fmtDateLatin(R.from).replace(/\//g, '')}-${fmtDateLatin(R.to).replace(/\//g, '')}.xlsx`, data: Exporter.xlsx(sheets) };
+}
+function xlsxRoster() {
+  const { a, len, b } = monthInfo();
+  const hm = holidayMap(DB.cfg.settings, DB.cfg.holidays, a, b);
+  const ps = visiblePeople();
+  const hd = (t, s) => ({ v: t, s: s == null ? 1 : s });
+  const head = [hd('کد'), hd('نام'), hd('بخش')];
+  for (let i = 0; i < len; i++) head.push(hd(`${i + 1}\n${WD_SHORT[weekdayOf(a + i)]}`, hm[a + i] ? 4 : 1));
+  head.push(hd('موظفی (ساعت)'), hd('کارکرد (ساعت)'), hd('اضافه/کسر (ساعت)'));
+  const rows = [head];
+  for (const p of ps) {
+    const mine = DB.assign[p.id] || {}, r = computeRange(dbv(), p, a, b, hm);
+    const row = [p.code || '', pname(p), (dept(p.deptId) || {}).name || ''];
+    for (let i = 0; i < len; i++) {
+      const c = mine[a + i];
+      row.push({ v: c ? (SPECIAL[c] ? SPECIAL[c].short : c) : '', s: hm[a + i] ? 5 : 3 });
+    }
+    row.push(hrs(r.duty), hrs(r.weighted + r.credit), hrs(r.overtime));
+    rows.push(row);
+  }
+  const legend = [[''], [hd('راهنما')]].concat(DB.cfg.shifts.map((s) => [s.code, s.name]), Object.keys(SPECIAL).map((k) => [SPECIAL[k].short, SPECIAL[k].name]));
+  const sheet = { name: `${MONTHS[ui.jm - 1]} ${ui.jy}`, rows: rows.concat(legend), widths: [10, 22, 14].concat(Array(len).fill(4.5), [12, 12, 14]), freeze: { rows: 1, cols: 2 } };
+  return { name: `roster-${ui.jy}-${String(ui.jm).padStart(2, '0')}.xlsx`, data: Exporter.xlsx([sheet]) };
+}
+/** چاپ همان نمای روی صفحه؛ در پنجرهٔ چاپ مرورگر گزینهٔ «ذخیره به‌صورت PDF» را انتخاب کنید */
+function printView(title, sub, sourceEls) {
+  const old = $('#printarea'); if (old) old.remove();
+  const box = document.createElement('div'); box.id = 'printarea';
+  box.innerHTML = `<h1>${esc(title)}</h1><div class="psub">${sub}</div>`;
+  for (const el of sourceEls) box.appendChild(el.cloneNode(true));
+  document.body.appendChild(box);
+  document.body.classList.add('printing');
+  const done = () => { document.body.classList.remove('printing'); box.remove(); window.removeEventListener('afterprint', done); };
+  window.addEventListener('afterprint', done);
+  setTimeout(() => { try { window.print(); } catch (e) { done(); } }, 50);
+}
+const exportBtns = (kind) => `<button class="btn" data-act="${kind}xlsx">خروجی Excel (xlsx)</button><button class="btn" data-act="${kind}print">PDF / چاپ</button>`;
+
+/* ---------- انتخابگر تاریخ شمسی ---------- */
+const DP = { el: null, input: null, jy: 0, jm: 0 };
+function dpClose() { if (DP.el) { DP.el.remove(); DP.el = null; DP.input = null; } }
+function dpHtml() {
+  const first = j2d(DP.jy, DP.jm, 1), len = monthLen(DP.jy, DP.jm), cur = parseDate(DP.input.value), T = todayJdn();
+  let hm = {};
+  try { hm = holidayMap(DB.cfg.settings, DB.cfg.holidays, first, first + len - 1); } catch (e) { /* بدون تعطیلی */ }
+  let cells = '';
+  for (let i = 0; i < weekdayOf(first); i++) cells += '<span></span>';
+  for (let d = 1; d <= len; d++) {
+    const j = first + d - 1;
+    cells += `<button type="button" class="dpd${hm[j] ? ' hol' : ''}${j === T ? ' today' : ''}${j === cur ? ' sel' : ''}" data-dpj="${j}"${hm[j] ? ` title="${esc(hm[j].name)}"` : ''}>${fa(d)}</button>`;
+  }
+  return `<div class="dph"><button type="button" class="btn sm" data-dpm="-12" aria-label="سال قبل">«</button><button type="button" class="btn sm" data-dpm="-1" aria-label="ماه قبل">›</button>
+    <b>${MONTHS[DP.jm - 1]} ${fa(DP.jy)}</b>
+    <button type="button" class="btn sm" data-dpm="1" aria-label="ماه بعد">‹</button><button type="button" class="btn sm" data-dpm="12" aria-label="سال بعد">»</button></div>
+    <div class="dpg">${WD_SHORT.map((w) => `<i>${w}</i>`).join('')}${cells}</div>
+    <div class="dpf"><button type="button" class="btn sm" data-dpj="${T}">امروز</button><button type="button" class="btn sm" data-dpx="1">بستن</button></div>`;
+}
+function dpPlace() {
+  const r = DP.input.getBoundingClientRect(), w = 288;
+  DP.el.style.top = (r.bottom + window.scrollY + 4) + 'px';
+  DP.el.style.left = (Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + window.scrollX) + 'px';
+}
+function dpOpen(input) {
+  dpClose();
+  const x = d2j(parseDate(input.value) || todayJdn());
+  DP.input = input; DP.jy = x.jy; DP.jm = x.jm;
+  DP.el = document.createElement('div'); DP.el.id = 'dp'; DP.el.setAttribute('role', 'dialog'); DP.el.setAttribute('aria-label', 'انتخاب تاریخ');
+  DP.el.innerHTML = dpHtml();
+  document.body.appendChild(DP.el); dpPlace();
+}
+document.addEventListener('click', (e) => {
+  const inp = e.target.closest('input[data-dp]');
+  if (inp) { if (!(DP.el && DP.input === inp)) dpOpen(inp); return; }
+  if (!DP.el) return;
+  const b = e.target.closest('#dp button');
+  if (!b) { if (!e.target.closest('#dp')) dpClose(); return; }
+  if (b.dataset.dpx) return dpClose();
+  if (b.dataset.dpm) {
+    const m = DP.jy * 12 + (DP.jm - 1) + +b.dataset.dpm;
+    DP.jy = Math.floor(m / 12); DP.jm = (m % 12) + 1;
+    DP.el.innerHTML = dpHtml(); return;
+  }
+  if (b.dataset.dpj) {
+    const inp2 = DP.input; inp2.value = fmtDateLatin(+b.dataset.dpj);
+    inp2.dispatchEvent(new Event('input', { bubbles: true })); inp2.dispatchEvent(new Event('change', { bubbles: true }));
+    dpClose();
+  }
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && DP.el) dpClose(); });
+window.addEventListener('resize', () => { if (DP.el) dpPlace(); });
+
+/* ---------- پیشنهاد خودکار برنامه ---------- */
+const autoState = { open: false, need: {}, maxConsec: 6, capH: null, result: null, msg: '' };
+function simpleShifts() { return DB.cfg.shifts.filter((s) => s.kind !== 'combo'); }
+function autoDefaults() {
+  if (autoState.capH == null) autoState.capH = DB.cfg.settings.otCapH > 0 ? DB.cfg.settings.otCapH : 12;
+  for (const s of simpleShifts()) if (autoState.need[s.code] == null) autoState.need[s.code] = ['M', 'A', 'N'].includes(s.code) ? 1 : 0;
+}
+function autoPanel() {
+  autoDefaults();
+  const ps = visiblePeople();
+  const fields = simpleShifts().map((s) => `<label class="f">${esc(s.code)} — ${esc(s.name)}<input type="number" min="0" max="50" data-need="${esc(s.code)}" value="${autoState.need[s.code]}" dir="ltr"></label>`).join('');
+  let res = '';
+  const R = autoState.result;
+  if (R) {
+    const { a, b } = monthInfo();
+    const byP = new Map(R.summary.map((x) => [x.pid, x]));
+    const added = {}; R.changes.forEach((c) => { added[c.pid] = (added[c.pid] || 0) + 1; });
+    const un = R.unfilled.slice(0, 40).map((u) => `<li>${N(fmtDate(u.j))}: شیفت ${esc(u.code)} — ${N(fa(u.missing))} نفر کم است</li>`).join('');
+    res = `<div class="note">${N(fa(R.changes.length))} خانه پیشنهاد شد${R.unfilled.length ? `؛ ${N(fa(R.unfilled.length))} مورد کمبود (به‌دلیل فاصلهٔ استراحت، روز کاریِ پیاپی یا سقف اضافه‌کار)` : '؛ همهٔ نیازها پوشش داده شد'}.</div>
+      ${un ? `<details class="warns"><summary>کمبودها</summary><ul>${un}</ul></details>` : ''}
+      <div class="tw"><table class="t"><thead><tr><th>نام</th><th class="n">شیفت جدید</th><th class="n">کارکرد پس از اعمال</th><th class="n">موظفی</th><th class="n">اضافه / کسر</th></tr></thead><tbody>${ps.map((p) => {
+    const x = byP.get(p.id); if (!x) return '';
+    return `<tr><td>${esc(pname(p))}</td><td class="n">${N(fa(added[p.id] || 0))}</td><td class="n">${hmH(x.load)}</td><td class="n">${hmH(x.target)}</td><td class="n">${hmH(x.load - x.target)}</td></tr>`;
+  }).join('')}</tbody></table></div>
+      <div class="bar"><button class="btn primary" data-act="autoapply"${R.changes.length ? '' : ' disabled'}>اعمال روی برنامه</button><span class="note">قابل بازگردانی با «بازگردانی آخرین تغییر».</span></div>`;
+  }
+  return `<div class="panel" id="autopanel"><h2>پیشنهاد خودکار برنامهٔ ${MONTHS[ui.jm - 1]} ${fa(ui.jy)}</h2>
+    <div class="note">فقط خانه‌های خالیِ افراد نمای فعلی پر می‌شود؛ شیفت‌ها و مرخصی‌های ثبت‌شده دست نمی‌خورند و در پوشش هر روز حساب می‌شوند. تعداد نفرِ لازم در هر روز برای هر شیفت را بنویسید.</div>
+    <div class="rows" style="gap:12px;flex-wrap:wrap">${fields}
+      <label class="f">حداکثر روز کاری پشت‌سرهم<input type="number" min="1" max="31" id="auto-consec" value="${autoState.maxConsec}" dir="ltr"></label>
+      <label class="f">سقف اضافه‌کار هر نفر (ساعت)<input type="number" min="0" max="200" id="auto-cap" value="${autoState.capH}" dir="ltr"></label></div>
+    ${autoState.msg ? `<div class="msg${/اضافه شد/.test(autoState.msg) ? ' ok' : ''}">${esc(autoState.msg)}</div>` : ''}
+    <div class="bar"><button class="btn primary" data-act="autorun">محاسبهٔ پیشنهاد</button><button class="btn" data-act="autoclose">بستن</button>
+      <span class="note">حداقل فاصلهٔ بین شیفت‌ها: ${N(fa(DB.cfg.settings.minRestH))} ساعت (تنظیمات)</span></div>${res}</div>`;
+}
+function autoRun() {
+  autoState.msg = '';
+  if (ui.dept === 'all' && DB.cfg.depts.length > 1) { autoState.msg = 'ابتدا بالای صفحه یک بخش را انتخاب کنید تا پیشنهاد فقط برای همان بخش محاسبه شود.'; autoState.result = null; return; }
+  for (const el of $$('[data-need]')) autoState.need[el.dataset.need] = Math.max(0, Math.min(50, parseInt(toLatin(el.value), 10) || 0));
+  autoState.maxConsec = Math.max(1, Math.min(31, parseInt(toLatin($('#auto-consec').value), 10) || 6));
+  autoState.capH = Math.max(0, Math.min(200, parseFloat(toLatin($('#auto-cap').value)) || 0));
+  const { a, b } = monthInfo();
+  autoState.result = Core.suggestSchedule(dbv(), { people: visiblePeople().map((p) => p.id), a, b, need: autoState.need, maxConsec: autoState.maxConsec, capMin: Math.round(autoState.capH * 60) });
+  if (!autoState.result.changes.length && !autoState.result.unfilled.length) autoState.msg = 'نیازی تعریف نشده یا همهٔ خانه‌ها پر است.';
 }
 
 /* ---------- تب: تنظیمات و پشتیبان ---------- */
@@ -1342,12 +1706,60 @@ function viewUsers() {
 
 /* ---------- رندر اصلی ---------- */
 const TABS = [['sched', 'برنامه شیفت'], ['pcal', 'تقویم فرد'], ['people', 'پرسنل'], ['depts', 'بخش‌ها'], ['shifts', 'شیفت‌ها'], ['hol', 'تعطیلات'], ['rep', 'گزارش‌ها'], ['set', 'تنظیمات و پشتیبان']];
+/* ---------- درخواست‌ها: مرخصی و جابه‌جایی ---------- */
+const reqState = { list: [], peers: [], todo: 0, rev: null, msg: '' };
+const REQ_STATUS = { pending: 'در انتظار تأیید مدیر', peer: 'در انتظار پذیرش همکار', manager: 'در انتظار تأیید مدیر', approved: 'تأیید شد', rejected: 'رد شد', declined: 'همکار نپذیرفت', cancelled: 'لغو شد' };
+const REQ_ACT = { cancel: 'لغو درخواست', accept: 'می‌پذیرم', decline: 'نمی‌پذیرم', approve: 'تأیید', reject: 'رد' };
+async function loadReqs() {
+  try {
+    const r = await Store.api('GET', '/api/requests');
+    reqState.list = r.requests; reqState.rev = r.reqRev;
+    reqState.todo = r.requests.filter((x) => x.actions.some((a) => a !== 'cancel')).length;
+    reqState.peers = ME.user.personId ? (await Store.api('GET', '/api/peers')).peers : [];
+  } catch (e) { reqState.msg = e.message; }
+}
+function reqRow(r) {
+  const what = r.kind === 'leave'
+    ? `${esc(SPECIAL[r.code].name)}: ${N(fmtDate(r.d1))}${r.d2 !== r.d1 ? ` تا ${N(fmtDate(r.d2))}` : ''}`
+    : `جابه‌جایی: شیفت ${esc(r.personName)} در ${N(fmtDate(r.d1))} ⇄ شیفت ${esc(r.peerName)} در ${N(fmtDate(r.d2))}`;
+  const btns = r.actions.map((a) => `<button class="btn sm${a === 'approve' || a === 'accept' ? ' primary' : ''}" data-act="reqact" data-id="${r.id}" data-a="${a}">${REQ_ACT[a]}</button>`).join('');
+  const needReply = r.actions.some((a) => a === 'approve' || a === 'reject' || a === 'decline');
+  return `<div class="panel req-item" data-status="${r.status}">
+    <div><b>${esc(r.personName)}</b> — ${what}</div>
+    <div class="note">${REQ_STATUS[r.status]}${r.decidedBy ? ` · ${esc(r.decidedBy)}` : ''}${r.note ? ` · توضیح: ${esc(r.note)}` : ''}${r.reply ? ` · پاسخ: ${esc(r.reply)}` : ''}</div>
+    ${btns ? `<div class="bar">${needReply ? `<input class="req-reply" id="rp-${r.id}" placeholder="پاسخ (اختیاری)" maxlength="300">` : ''}${btns}</div>` : ''}</div>`;
+}
+function viewReq() {
+  const me = ME.user, mine = !!me.personId;
+  const todo = reqState.list.filter((r) => r.actions.some((a) => a !== 'cancel'));
+  const rest = reqState.list.filter((r) => !todo.includes(r));
+  const forms = !mine ? `<div class="panel"><div class="note">این حساب به فردی در فهرست پرسنل وصل نیست و نمی‌تواند درخواست ثبت کند.</div></div>` : `
+    <form class="panel" id="f-leave" autocomplete="off"><h2>درخواست مرخصی</h2>
+      <label class="f">نوع<select name="code">${['LV', 'LU', 'SK'].map((c) => `<option value="${c}">${SPECIAL[c].name}</option>`).join('')}</select></label>
+      <label class="f">از تاریخ (مثلاً ۱۴۰۵/۰۷/۱۲)<input name="from" data-dp dir="ltr" required placeholder="۱۴۰۵/۰۷/۱۲"></label>
+      <label class="f">تا تاریخ<input name="to" data-dp dir="ltr" required placeholder="۱۴۰۵/۰۷/۱۲"></label>
+      <label class="f">توضیح<input name="note" maxlength="300"></label>
+      <div class="bar"><button class="btn primary" type="submit">ثبت درخواست</button><span id="f-leave-msg"></span></div></form>
+    <form class="panel" id="f-swap" autocomplete="off"><h2>جابه‌جایی شیفت با همکار</h2>
+      <label class="f">همکار<select name="peerId">${reqState.peers.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></label>
+      <label class="f">روز شیفت شما<input name="d1" data-dp dir="ltr" required placeholder="۱۴۰۵/۰۷/۱۲"></label>
+      <label class="f">روز شیفت همکار (اگر همان روز است، همان تاریخ را بنویسید)<input name="d2" data-dp dir="ltr" required placeholder="۱۴۰۵/۰۷/۱۲"></label>
+      <label class="f">توضیح<input name="note" maxlength="300"></label>
+      <div class="bar"><button class="btn primary" type="submit">ارسال برای همکار</button><span id="f-swap-msg"></span></div>
+      <div class="note">ابتدا همکار می‌پذیرد، سپس مدیر تأیید می‌کند و برنامه خودکار تغییر می‌کند.</div></form>`;
+  return `${reqState.msg ? `<div class="msg">${esc(reqState.msg)}</div>` : ''}
+    <div class="split"><div style="display:flex;flex-direction:column;gap:12px">${forms}</div>
+    <div style="min-width:0;display:flex;flex-direction:column;gap:10px">
+      <h2>نیازمند اقدام شما (${N(fa(todo.length))})</h2>${todo.map(reqRow).join('') || '<div class="note">موردی نیست.</div>'}
+      <h2>سایر درخواست‌ها</h2>${rest.map(reqRow).join('') || '<div class="note">درخواستی ثبت نشده است.</div>'}</div></div>`;
+}
 function tabsFor() {
   if (!isServer()) return TABS;
   const r = role(), acct = ['acct', 'حساب من'];
-  if (r === 'admin') return TABS.slice(0, 7).concat([['users', 'کاربران'], ['set', 'تنظیمات'], acct]);
-  if (r === 'manager') return [['sched', 'برنامه شیفت'], ['pcal', 'تقویم فرد'], ['rep', 'گزارش‌ها'], acct];
-  return [['pcal', 'برنامه من'], ['rep', 'گزارش من'], acct];
+  const rq = ['req', 'درخواست‌ها'];
+  if (r === 'admin') return TABS.slice(0, 7).concat([rq, ['users', 'کاربران'], ['set', 'تنظیمات'], acct]);
+  if (r === 'manager') return [['sched', 'برنامه شیفت'], ['pcal', 'تقویم فرد'], ['rep', 'گزارش‌ها'], rq, acct];
+  return [['pcal', 'برنامه من'], ['rep', 'گزارش من'], rq, acct];
 }
 let loginMsg = '';
 function sessionLost() {
@@ -1360,6 +1772,7 @@ function sessionLost() {
 }
 let renderTok = 0;
 async function render() {
+  dpClose();
   const app = $('#app');
   if (!DB.cfg) { app.innerHTML = '<div class="panel empty"><b>در حال بارگذاری…</b></div>'; return; }
   if (isServer() && !ME.user) {
@@ -1375,14 +1788,15 @@ async function render() {
   if (ui.tab === 'sched' || ui.tab === 'pcal') await Store.ensureRange(a, b);
   if (ui.tab === 'rep') { const r = repRange(); await Store.ensureRange(r.from, r.to); }
   if (ui.tab === 'users') await loadUsers();
+  if (ui.tab === 'req') await loadReqs();
   if (ui.tab === 'set' && isServer()) { try { DB.log = (await Store.api('GET', '/api/log?limit=100')).items; } catch (e) { DB.log = []; } }
   if (tok !== renderTok || (isServer() && !ME.user)) return;
-  const views = { sched: viewSched, pcal: viewPcal, people: viewPeople, depts: viewDepts, shifts: viewShifts, hol: viewHol, rep: viewRep, set: viewSet, acct: viewAcct, users: viewUsers };
+  const views = { sched: viewSched, pcal: viewPcal, people: viewPeople, depts: viewDepts, shifts: viewShifts, hol: viewHol, rep: viewRep, set: viewSet, acct: viewAcct, users: viewUsers, req: viewReq };
   const who = isServer() ? `<span class="note who">${esc(ME.user.display || ME.user.code)} · ${ROLE_NAMES[ME.user.role]}</span>` : '';
   app.innerHTML = `<div class="wrap">
     <div class="top"><div class="brand"><h1>شیفت‌یار</h1><small>برنامه‌ریز شیفت پرسنل</small></div>
       <div class="rows">${who}<span id="savestate" class="save ${Store.status}"><i></i><span>${esc(Store.statusText())}</span></span></div></div>
-    <nav class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${ui.tab === k}" data-tab="${k}">${l}</button>`).join('')}</nav>
+    <nav class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${ui.tab === k}" data-tab="${k}">${l}${k === 'req' && reqState.todo ? ` <span class="badge">${N(fa(reqState.todo))}</span>` : ''}</button>`).join('')}</nav>
     <div id="flash" aria-live="polite"></div>
     <main id="main" style="display:flex;flex-direction:column;gap:12px">${views[ui.tab]()}</main></div>`;
   if (ui.tab === 'shifts') shiftDraftPreview();
@@ -1402,13 +1816,15 @@ function showText(title, text) {
   const ta = $('#textbox-area'); ta.value = text; ta.focus(); ta.select();
 }
 async function saveFile(filename, data, label) {
+  const binary = typeof data !== 'string';
+  const MIME = { xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
   if (Store.dl) {
     try { await Store.dl.save({ filename, data }); return true; }
     catch (e) { if (e && e.code === 'declined') return false; }
   } else if (!window.claude) {
     // صفحهٔ معمولی (سرور یا فایل محلی): دانلود مستقیم مرورگر
     try {
-      const url = URL.createObjectURL(new Blob([data], { type: 'text/plain;charset=utf-8' }));
+      const url = URL.createObjectURL(new Blob([data], { type: binary ? (MIME[filename.split('.').pop()] || 'application/octet-stream') : 'text/plain;charset=utf-8' }));
       const a = document.createElement('a');
       a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 3000);
@@ -1569,6 +1985,22 @@ document.addEventListener('click', async (e) => {
     case 'repmonth': { const m = monthInfo(); ui.rep.from = m.a; ui.rep.to = m.b; ui.rep.dept = repDept(); return render(); }
     case 'repweek': { const T = todayJdn(), s = T - weekdayOf(T); ui.rep.from = s; ui.rep.to = s + 6; ui.rep.dept = repDept(); return render(); }
     case 'reptoday': { const T = todayJdn(); ui.rep.from = T; ui.rep.to = T; ui.rep.dept = repDept(); return render(); }
+    case 'repxlsx': { ui.rep.dept = repDept(); const x = xlsxReport(); const ok = await saveFile(x.name, x.data, 'Excel'); if (ok) flash('فایل ذخیره شد.', true, '#rep-msg'); return; }
+    case 'schedxlsx': { const x = xlsxRoster(); const ok = await saveFile(x.name, x.data, 'Excel'); if (ok) flash('فایل ذخیره شد.', true); return; }
+    case 'repprint': { const R = buildReport(); printView('گزارش کارکرد پرسنل', `${N(fmtDate(R.from))} تا ${N(fmtDate(R.to))}`, $$('#main .tw')); return; }
+    case 'schedprint': {
+      const d = ui.dept === 'all' ? 'همهٔ بخش‌ها' : ui.dept === 'none' ? 'بدون بخش' : (dept(ui.dept) || {}).name || '';
+      printView(`برنامهٔ شیفت ${MONTHS[ui.jm - 1]} ${fa(ui.jy)}`, esc(d), $$('#main .rwrap, #main .legend')); return;
+    }
+    case 'autoopen': autoState.open = true; autoState.result = null; autoState.msg = ''; return render();
+    case 'autoclose': autoState.open = false; autoState.result = null; return render();
+    case 'autorun': autoRun(); return render();
+    case 'autoapply': {
+      const R = autoState.result; if (!R || !R.changes.length) return;
+      const st = []; for (const c of R.changes) setAssign(c.pid, c.j, c.code, st);
+      finishStroke(st, 'پیشنهاد خودکار'); autoState.result = null; autoState.msg = `${fa(st.length)} خانه به برنامه اضافه شد.`;
+      return render();
+    }
     case 'repcsv': { ui.rep.dept = repDept(); const c = csvText(); const ok = await saveFile(c.name, c.text, 'متن CSV'); if (ok) flash('فایل ذخیره شد.', true, '#rep-msg'); return; }
     /* حساب و کاربران (حالت سرور) */
     case 'logout': {
@@ -1576,6 +2008,12 @@ document.addEventListener('click', async (e) => {
       ME.user = null; clearInterval(Store.pollTimer);
       Store.pending = new Map(); Store.loaded = new Set(); DB.assign = {}; DB.cfg = defaultCfg();
       ui.undo = []; usersState.list = []; usersState.edit = null; usersState.notice = ''; loginMsg = '';
+      return render();
+    }
+    case 'reqact': {
+      const a = t.dataset.a, rp = $('#rp-' + id);
+      try { await Store.api('POST', `/api/requests/${id}/respond`, { action: a, reply: rp ? rp.value : '' }); reqState.msg = ''; if (a === 'approve') Store.loaded = new Set(); }
+      catch (err) { reqState.msg = err.message; }
       return render();
     }
     case 'dismissnotice': usersState.notice = ''; return render();
@@ -1693,7 +2131,7 @@ document.addEventListener('input', (e) => {
 /* ---------- فرم‌های ورود، گذرواژه و کاربران (حالت سرور) ---------- */
 document.addEventListener('submit', async (e) => {
   const f = e.target;
-  if (!['f-login', 'f-pw', 'f-user'].includes(f.id)) return;
+  if (!['f-login', 'f-pw', 'f-user', 'f-leave', 'f-swap'].includes(f.id)) return;
   e.preventDefault();
   const fd = new FormData(f);
   const btn = f.querySelector('button[type=submit]');
@@ -1717,6 +2155,14 @@ document.addEventListener('submit', async (e) => {
         if (force) { ME.user.mustChange = false; await Store.enterApp(); ui.tab = tabsFor()[0][0]; loginMsg = ''; await render(); flash('گذرواژهٔ جدید ذخیره شد.', true); }
         else { f.reset(); flash('گذرواژه تغییر کرد.', true, '#f-pw-msg'); }
       } catch (err) { await fail(err.message); }
+    } else if (f.id === 'f-leave' || f.id === 'f-swap') {
+      const msg = '#' + f.id + '-msg', dt = (k) => parseDate(String(fd.get(k) || ''));
+      const body = f.id === 'f-leave'
+        ? { kind: 'leave', code: fd.get('code'), from: dt('from'), to: dt('to'), note: String(fd.get('note') || '') }
+        : { kind: 'swap', peerId: fd.get('peerId'), d1: dt('d1'), d2: dt('d2'), note: String(fd.get('note') || '') };
+      if (Object.values(body).some((v) => v === null)) return flash('تاریخ را به شکل ۱۴۰۵/۰۷/۱۲ وارد کنید.', false, msg);
+      try { await Store.api('POST', '/api/requests', body); reqState.msg = ''; await render(); flash('درخواست ثبت شد.', true, msg); }
+      catch (err) { flash(err.message, false, msg); }
     } else if (f.id === 'f-user') {
       const role_ = fd.get('role');
       const body = {

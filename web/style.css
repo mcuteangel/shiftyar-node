@@ -202,3 +202,29 @@ table.roster { width: 100%; }
 .req-item[data-status="approved"] { border-inline-start: 3px solid #2e9e5b; }
 .req-item[data-status="rejected"], .req-item[data-status="declined"] { border-inline-start: 3px solid #c0392b; }
 .req-reply { flex: 1; min-width: 120px; }
+
+#dp { position: absolute; z-index: 60; width: 288px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.22); padding: 10px; }
+#dp .dph { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-bottom: 6px; }
+#dp .dpg { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; }
+#dp .dpg i { font-style: normal; font-size: 11px; color: var(--muted); padding: 2px 0; }
+#dp .dpd { border: 0; background: transparent; color: var(--ink); border-radius: 6px; min-height: 34px; font: inherit; cursor: pointer; }
+#dp .dpd:hover { background: var(--surface2); }
+#dp .dpd.hol { color: var(--hol-ink, #c0392b); }
+#dp .dpd.today { outline: 1px solid var(--accent); }
+#dp .dpd.sel { background: var(--accent); color: #fff; }
+#dp .dpf { display: flex; justify-content: space-between; margin-top: 8px; }
+#printarea { display: none; }
+@media print {
+  @page { size: A4 landscape; margin: 10mm; }
+  body.printing > *:not(#printarea) { display: none !important; }
+  body.printing #printarea { display: block; color: #000; background: #fff; }
+  body.printing { background: #fff !important; }
+  #printarea h1 { font-size: 18px; margin: 0 0 2px; }
+  #printarea .psub { font-size: 12px; margin-bottom: 8px; color: #444; }
+  #printarea, #printarea * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  #printarea .rwrap, #printarea .tw { overflow: visible !important; max-height: none !important; }
+  #printarea table { width: 100%; font-size: 9px; border-collapse: collapse; }
+  #printarea th, #printarea td { position: static !important; border: 1px solid #aaa; padding: 2px 3px; }
+  #printarea tr { break-inside: avoid; }
+  #printarea .legend { font-size: 10px; margin-top: 8px; }
+}

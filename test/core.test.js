@@ -139,4 +139,42 @@ t('تبدیل رشته تاریخ و ارقام فارسی', () => {
   assert.strictEqual(C.fmtHM(440), '۷:۲۰');
 });
 
+function mkDb(n, assign) {
+  const people = Array.from({ length: n }, (_, i) => ({ id: 'p' + i, first: 'x', last: 'y' + i, contract: i % 2 ? 't4' : 'official' }));
+  return { shifts: C.defaultShifts(), holidays: [], settings: C.defaultSettings(), people, assign: assign || {} };
+}
+t('پیشنهاد خودکار: نیاز هر روز پر می‌شود و قیدها رعایت می‌شوند', () => {
+  const db = mkDb(8);
+  const a = C.j2d(1405, 8, 1), b = a + 29;
+  const r = C.suggestSchedule(db, { people: db.people.map((p) => p.id), a, b, need: { M: 2, A: 2, N: 1 }, maxConsec: 6, capMin: 20 * 60 });
+  assert.strictEqual(r.unfilled.length, 0, JSON.stringify(r.unfilled.slice(0, 3)));
+  assert.strictEqual(r.changes.length, 30 * 5);
+  // اعمال و بررسی فاصلهٔ استراحت و حداکثر روز پیاپی
+  for (const c of r.changes) (db.assign[c.pid] = db.assign[c.pid] || {})[c.j] = c.code;
+  for (const p of db.people) {
+    assert.deepStrictEqual(C.restIssues(db, p), {}, 'فاصلهٔ بین شیفت‌ها ' + p.id);
+    let run = 0;
+    for (let j = a; j <= b; j++) { run = db.assign[p.id] && db.assign[p.id][j] ? run + 1 : 0; assert.ok(run <= 6, 'روز پیاپی ' + p.id); }
+  }
+  // تراز بار: اختلاف کارکرد بین افراد کم است
+  const loads = r.summary.map((x) => x.load);
+  assert.ok(Math.max(...loads) - Math.min(...loads) < 2 * 750, 'تراز بار: ' + loads.join(','));
+});
+t('پیشنهاد خودکار: خانه‌های پرشده و مرخصی دست‌نخورده می‌ماند و کمبود گزارش می‌شود', () => {
+  const a = C.j2d(1405, 8, 1);
+  const db = mkDb(2, { p0: { [a]: 'LV', [a + 1]: 'A' } });
+  const r = C.suggestSchedule(db, { people: ['p0', 'p1'], a, b: a + 3, need: { M: 2 }, maxConsec: 6, capMin: 100 * 60 });
+  assert.ok(!r.changes.some((c) => c.pid === 'p0' && (c.j === a || c.j === a + 1)), 'p0 دست‌نخورده');
+  assert.ok(r.unfilled.some((u) => u.j === a && u.code === 'M' && u.missing === 1), 'روز اول فقط یک نفر در دسترس است');
+  const d = C.suggestSchedule(db, { people: ['p0', 'p1'], a, b: a + 3, need: { M: 1 }, maxConsec: 6, capMin: 0 });
+  assert.ok(d.changes.length <= 4);
+});
+t('پیشنهاد خودکار: سقف اضافه‌کار', () => {
+  const db = mkDb(1), a = C.j2d(1405, 8, 1);
+  const r = C.suggestSchedule(db, { people: ['p0'], a, b: a + 29, need: { M: 1 }, maxConsec: 30, capMin: 0 });
+  const total = r.summary[0].load;
+  assert.ok(total <= r.summary[0].target, 'از موظفی نمی‌گذرد: ' + total + ' ' + r.summary[0].target);
+  assert.ok(r.unfilled.length > 0);
+});
+
 console.log(results.join('\n'));

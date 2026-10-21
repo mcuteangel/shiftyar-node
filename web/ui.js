@@ -46,7 +46,7 @@ function normalizeCfg(c) {
     sample: !!c.sample,
   };
 }
-const dbv = () => ({ settings: DB.cfg.settings, holidays: DB.cfg.holidays, shifts: DB.cfg.shifts, assign: DB.assign });
+const dbv = () => ({ settings: DB.cfg.settings, holidays: DB.cfg.holidays, shifts: DB.cfg.shifts, assign: DB.assign, people: DB.cfg.people });
 const person = (id) => DB.cfg.people.find((p) => p.id === id);
 const dept = (id) => DB.cfg.depts.find((d) => d.id === id);
 const pname = (p) => `${p.first || ''} ${p.last || ''}`.trim() || 'بدون نام';
@@ -457,10 +457,12 @@ function viewSched() {
           <select id="copy-src"><option value="7">۷ روز قبل (هفتگی)</option><option value="14">۱۴ روز قبل</option><option value="28">۲۸ روز قبل</option><option value="pm">همان تاریخِ ماه قبل</option></select></label>
         <button class="btn" data-act="copypat" data-confirm="خانه‌های این ماه رونویسی می‌شوند. تأیید؟">اعمال</button>
         <span class="sp"></span>
+        ${canEdit() ? '<button class="btn" data-act="autoopen">پیشنهاد خودکار</button>' : ''}${exportBtns('sched')}
         <button class="btn danger" data-act="clearmonth" data-confirm="برنامهٔ این ماه پاک شود؟">پاک‌کردن ماه</button>
       </div>
       <div class="note">با قلم انتخاب‌شده روی خانه‌ها بکشید یا کلیک کنید. کلیک دوباره روی خانه‌ای با همان مقدار، آن را پاک می‌کند. ستون‌های قرمز تعطیل‌اند.</div>
     </div>
+    ${autoState.open && canEdit() ? autoPanel() : ''}
     ${ps.length ? `<div class="rwrap"><table class="roster" id="roster"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`
       : `<div class="panel empty"><b>هنوز پرسنلی در این نما نیست</b><span>از تب «پرسنل» نفرات را اضافه کنید، سپس اینجا شیفت‌ها را بکشید.</span><button class="btn primary" data-tab="people">رفتن به پرسنل</button></div>`}
     ${legend}<div id="side" class="rows" style="flex-direction:column;align-items:stretch;gap:8px">${sideHtml(ps, ctx)}</div>`;
@@ -679,15 +681,15 @@ function viewRep() {
       ${R.shiftCols.map((c) => `<td class="n">${g.counts[c] ? fa(g.counts[c]) : '·'}</td>`).join('')}</tr>`;
   }).join('');
   return `<div class="panel"><div class="bar">
-      <label class="f">از تاریخ<input type="text" id="rep-from" dir="ltr" size="11" value="${fmtDateLatin(R.from)}"></label>
-      <label class="f">تا تاریخ<input type="text" id="rep-to" dir="ltr" size="11" value="${fmtDateLatin(R.to)}"></label>
+      <label class="f">از تاریخ<input type="text" id="rep-from" data-dp dir="ltr" size="11" value="${fmtDateLatin(R.from)}"></label>
+      <label class="f">تا تاریخ<input type="text" id="rep-to" data-dp dir="ltr" size="11" value="${fmtDateLatin(R.to)}"></label>
       ${role() === 'staff' ? '' : `<label class="f">بخش${deptSelect('rep-dept', ui.rep.dept, true)}</label>`}
       <button class="btn primary" data-act="repgo" style="align-self:flex-end">نمایش</button>
       <span class="sp"></span>
       <button class="btn sm" data-act="repmonth" style="align-self:flex-end">ماهِ انتخاب‌شده</button>
       <button class="btn sm" data-act="repweek" style="align-self:flex-end">هفتهٔ جاری</button>
       <button class="btn sm" data-act="reptoday" style="align-self:flex-end">امروز</button>
-      <button class="btn" data-act="repcsv" style="align-self:flex-end">خروجی CSV (برای Excel)</button></div>
+      <span class="rows" style="align-self:flex-end;gap:6px">${exportBtns('rep')}<button class="btn" data-act="repcsv">CSV</button></span></div>
     <div class="note">بازه: ${N(fmtDate(R.from))} تا ${N(fmtDate(R.to))} (${N(fa(days))} روز). موظفی هر نفر برای این بازه: ${hmH((days - Object.values(R.hm).filter(Boolean).length) * DB.cfg.settings.dutyMin)}.
     تاریخ را به شکل ۱۴۰۵/۰۷/۲۵ بنویسید.</div><div id="rep-msg"></div></div>
     ${R.rows.length ? `<div class="tw"><table class="t"><thead><tr>${head}</tr></thead><tbody>${body}</tbody><tfoot>${foot}</tfoot></table></div>
@@ -706,6 +708,161 @@ function csvText() {
       .concat(R.shiftCols.map((c) => r.counts[c] || 0)).concat(R.spCols.map((c) => r.counts[c] || 0)).map(q).join(','));
   });
   return { name: `report-${fmtDateLatin(R.from).replace(/\//g, '')}-${fmtDateLatin(R.to).replace(/\//g, '')}.csv`, text: '﻿' + lines.join('\r\n') };
+}
+
+/* ---------- خروجی Excel و چاپ/PDF ---------- */
+const hrs = (m) => Math.round(m / 60 * 100) / 100;
+function xlsxReport() {
+  const R = buildReport();
+  const hd = (t, s) => ({ v: t, s: s == null ? 1 : s });
+  const head = ['کد پرسنلی', 'نام', 'بخش', 'قرارداد', 'موظفی (ساعت)', 'کارکرد واقعی (ساعت)', 'با ضریب (ساعت)', 'اعتبار مرخصی (ساعت)', 'اضافه/کسر (ساعت)']
+    .concat(R.shiftCols.map((c) => 'تعداد ' + c)).concat(R.spCols.map((c) => SPECIAL[c].name)).map((t) => hd(t));
+  const rows = [head];
+  const tot = [0, 0, 0, 0, 0];
+  R.rows.forEach(({ p, r }) => {
+    const v = [r.duty, r.actual, r.weighted, r.credit, r.overtime]; v.forEach((x, i) => { tot[i] += x; });
+    rows.push([p.code || '', pname(p), (dept(p.deptId) || {}).name || '', CONTRACTS[p.contract] || ''].concat(v.map(hrs))
+      .concat(R.shiftCols.map((c) => ({ v: r.counts[c] || 0, s: 3 }))).concat(R.spCols.map((c) => ({ v: r.counts[c] || 0, s: 3 }))));
+  });
+  rows.push([hd('جمع', 6), '', '', ''].concat(tot.map((x) => ({ v: hrs(x), s: 6 }))));
+  const sheets = [{ name: 'گزارش', rows, widths: [12, 22, 16, 11, 13, 15, 13, 15, 14].concat(R.shiftCols.concat(R.spCols).map(() => 10)), freeze: { rows: 1, cols: 2 } }];
+  sheets.push({ name: 'راهنما', rows: [[hd('بازه')], [`${fmtDateLatin(R.from)} تا ${fmtDateLatin(R.to)}`], [''], [hd('توضیح')], ['ستون‌های زمانی بر حسب ساعت اعشاری‌اند (۷:۲۰ = ۷٫۳۳). «با ضریب» شامل ضریب تعطیلی قراردادها است.']], widths: [70], freeze: { rows: 0, cols: 0 } });
+  return { name: `report-${fmtDateLatin(R.from).replace(/\//g, '')}-${fmtDateLatin(R.to).replace(/\//g, '')}.xlsx`, data: Exporter.xlsx(sheets) };
+}
+function xlsxRoster() {
+  const { a, len, b } = monthInfo();
+  const hm = holidayMap(DB.cfg.settings, DB.cfg.holidays, a, b);
+  const ps = visiblePeople();
+  const hd = (t, s) => ({ v: t, s: s == null ? 1 : s });
+  const head = [hd('کد'), hd('نام'), hd('بخش')];
+  for (let i = 0; i < len; i++) head.push(hd(`${i + 1}\n${WD_SHORT[weekdayOf(a + i)]}`, hm[a + i] ? 4 : 1));
+  head.push(hd('موظفی (ساعت)'), hd('کارکرد (ساعت)'), hd('اضافه/کسر (ساعت)'));
+  const rows = [head];
+  for (const p of ps) {
+    const mine = DB.assign[p.id] || {}, r = computeRange(dbv(), p, a, b, hm);
+    const row = [p.code || '', pname(p), (dept(p.deptId) || {}).name || ''];
+    for (let i = 0; i < len; i++) {
+      const c = mine[a + i];
+      row.push({ v: c ? (SPECIAL[c] ? SPECIAL[c].short : c) : '', s: hm[a + i] ? 5 : 3 });
+    }
+    row.push(hrs(r.duty), hrs(r.weighted + r.credit), hrs(r.overtime));
+    rows.push(row);
+  }
+  const legend = [[''], [hd('راهنما')]].concat(DB.cfg.shifts.map((s) => [s.code, s.name]), Object.keys(SPECIAL).map((k) => [SPECIAL[k].short, SPECIAL[k].name]));
+  const sheet = { name: `${MONTHS[ui.jm - 1]} ${ui.jy}`, rows: rows.concat(legend), widths: [10, 22, 14].concat(Array(len).fill(4.5), [12, 12, 14]), freeze: { rows: 1, cols: 2 } };
+  return { name: `roster-${ui.jy}-${String(ui.jm).padStart(2, '0')}.xlsx`, data: Exporter.xlsx([sheet]) };
+}
+/** چاپ همان نمای روی صفحه؛ در پنجرهٔ چاپ مرورگر گزینهٔ «ذخیره به‌صورت PDF» را انتخاب کنید */
+function printView(title, sub, sourceEls) {
+  const old = $('#printarea'); if (old) old.remove();
+  const box = document.createElement('div'); box.id = 'printarea';
+  box.innerHTML = `<h1>${esc(title)}</h1><div class="psub">${sub}</div>`;
+  for (const el of sourceEls) box.appendChild(el.cloneNode(true));
+  document.body.appendChild(box);
+  document.body.classList.add('printing');
+  const done = () => { document.body.classList.remove('printing'); box.remove(); window.removeEventListener('afterprint', done); };
+  window.addEventListener('afterprint', done);
+  setTimeout(() => { try { window.print(); } catch (e) { done(); } }, 50);
+}
+const exportBtns = (kind) => `<button class="btn" data-act="${kind}xlsx">خروجی Excel (xlsx)</button><button class="btn" data-act="${kind}print">PDF / چاپ</button>`;
+
+/* ---------- انتخابگر تاریخ شمسی ---------- */
+const DP = { el: null, input: null, jy: 0, jm: 0 };
+function dpClose() { if (DP.el) { DP.el.remove(); DP.el = null; DP.input = null; } }
+function dpHtml() {
+  const first = j2d(DP.jy, DP.jm, 1), len = monthLen(DP.jy, DP.jm), cur = parseDate(DP.input.value), T = todayJdn();
+  let hm = {};
+  try { hm = holidayMap(DB.cfg.settings, DB.cfg.holidays, first, first + len - 1); } catch (e) { /* بدون تعطیلی */ }
+  let cells = '';
+  for (let i = 0; i < weekdayOf(first); i++) cells += '<span></span>';
+  for (let d = 1; d <= len; d++) {
+    const j = first + d - 1;
+    cells += `<button type="button" class="dpd${hm[j] ? ' hol' : ''}${j === T ? ' today' : ''}${j === cur ? ' sel' : ''}" data-dpj="${j}"${hm[j] ? ` title="${esc(hm[j].name)}"` : ''}>${fa(d)}</button>`;
+  }
+  return `<div class="dph"><button type="button" class="btn sm" data-dpm="-12" aria-label="سال قبل">«</button><button type="button" class="btn sm" data-dpm="-1" aria-label="ماه قبل">›</button>
+    <b>${MONTHS[DP.jm - 1]} ${fa(DP.jy)}</b>
+    <button type="button" class="btn sm" data-dpm="1" aria-label="ماه بعد">‹</button><button type="button" class="btn sm" data-dpm="12" aria-label="سال بعد">»</button></div>
+    <div class="dpg">${WD_SHORT.map((w) => `<i>${w}</i>`).join('')}${cells}</div>
+    <div class="dpf"><button type="button" class="btn sm" data-dpj="${T}">امروز</button><button type="button" class="btn sm" data-dpx="1">بستن</button></div>`;
+}
+function dpPlace() {
+  const r = DP.input.getBoundingClientRect(), w = 288;
+  DP.el.style.top = (r.bottom + window.scrollY + 4) + 'px';
+  DP.el.style.left = (Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + window.scrollX) + 'px';
+}
+function dpOpen(input) {
+  dpClose();
+  const x = d2j(parseDate(input.value) || todayJdn());
+  DP.input = input; DP.jy = x.jy; DP.jm = x.jm;
+  DP.el = document.createElement('div'); DP.el.id = 'dp'; DP.el.setAttribute('role', 'dialog'); DP.el.setAttribute('aria-label', 'انتخاب تاریخ');
+  DP.el.innerHTML = dpHtml();
+  document.body.appendChild(DP.el); dpPlace();
+}
+document.addEventListener('click', (e) => {
+  const inp = e.target.closest('input[data-dp]');
+  if (inp) { if (!(DP.el && DP.input === inp)) dpOpen(inp); return; }
+  if (!DP.el) return;
+  const b = e.target.closest('#dp button');
+  if (!b) { if (!e.target.closest('#dp')) dpClose(); return; }
+  if (b.dataset.dpx) return dpClose();
+  if (b.dataset.dpm) {
+    const m = DP.jy * 12 + (DP.jm - 1) + +b.dataset.dpm;
+    DP.jy = Math.floor(m / 12); DP.jm = (m % 12) + 1;
+    DP.el.innerHTML = dpHtml(); return;
+  }
+  if (b.dataset.dpj) {
+    const inp2 = DP.input; inp2.value = fmtDateLatin(+b.dataset.dpj);
+    inp2.dispatchEvent(new Event('input', { bubbles: true })); inp2.dispatchEvent(new Event('change', { bubbles: true }));
+    dpClose();
+  }
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && DP.el) dpClose(); });
+window.addEventListener('resize', () => { if (DP.el) dpPlace(); });
+
+/* ---------- پیشنهاد خودکار برنامه ---------- */
+const autoState = { open: false, need: {}, maxConsec: 6, capH: null, result: null, msg: '' };
+function simpleShifts() { return DB.cfg.shifts.filter((s) => s.kind !== 'combo'); }
+function autoDefaults() {
+  if (autoState.capH == null) autoState.capH = DB.cfg.settings.otCapH > 0 ? DB.cfg.settings.otCapH : 12;
+  for (const s of simpleShifts()) if (autoState.need[s.code] == null) autoState.need[s.code] = ['M', 'A', 'N'].includes(s.code) ? 1 : 0;
+}
+function autoPanel() {
+  autoDefaults();
+  const ps = visiblePeople();
+  const fields = simpleShifts().map((s) => `<label class="f">${esc(s.code)} — ${esc(s.name)}<input type="number" min="0" max="50" data-need="${esc(s.code)}" value="${autoState.need[s.code]}" dir="ltr"></label>`).join('');
+  let res = '';
+  const R = autoState.result;
+  if (R) {
+    const { a, b } = monthInfo();
+    const byP = new Map(R.summary.map((x) => [x.pid, x]));
+    const added = {}; R.changes.forEach((c) => { added[c.pid] = (added[c.pid] || 0) + 1; });
+    const un = R.unfilled.slice(0, 40).map((u) => `<li>${N(fmtDate(u.j))}: شیفت ${esc(u.code)} — ${N(fa(u.missing))} نفر کم است</li>`).join('');
+    res = `<div class="note">${N(fa(R.changes.length))} خانه پیشنهاد شد${R.unfilled.length ? `؛ ${N(fa(R.unfilled.length))} مورد کمبود (به‌دلیل فاصلهٔ استراحت، روز کاریِ پیاپی یا سقف اضافه‌کار)` : '؛ همهٔ نیازها پوشش داده شد'}.</div>
+      ${un ? `<details class="warns"><summary>کمبودها</summary><ul>${un}</ul></details>` : ''}
+      <div class="tw"><table class="t"><thead><tr><th>نام</th><th class="n">شیفت جدید</th><th class="n">کارکرد پس از اعمال</th><th class="n">موظفی</th><th class="n">اضافه / کسر</th></tr></thead><tbody>${ps.map((p) => {
+    const x = byP.get(p.id); if (!x) return '';
+    return `<tr><td>${esc(pname(p))}</td><td class="n">${N(fa(added[p.id] || 0))}</td><td class="n">${hmH(x.load)}</td><td class="n">${hmH(x.target)}</td><td class="n">${hmH(x.load - x.target)}</td></tr>`;
+  }).join('')}</tbody></table></div>
+      <div class="bar"><button class="btn primary" data-act="autoapply"${R.changes.length ? '' : ' disabled'}>اعمال روی برنامه</button><span class="note">قابل بازگردانی با «بازگردانی آخرین تغییر».</span></div>`;
+  }
+  return `<div class="panel" id="autopanel"><h2>پیشنهاد خودکار برنامهٔ ${MONTHS[ui.jm - 1]} ${fa(ui.jy)}</h2>
+    <div class="note">فقط خانه‌های خالیِ افراد نمای فعلی پر می‌شود؛ شیفت‌ها و مرخصی‌های ثبت‌شده دست نمی‌خورند و در پوشش هر روز حساب می‌شوند. تعداد نفرِ لازم در هر روز برای هر شیفت را بنویسید.</div>
+    <div class="rows" style="gap:12px;flex-wrap:wrap">${fields}
+      <label class="f">حداکثر روز کاری پشت‌سرهم<input type="number" min="1" max="31" id="auto-consec" value="${autoState.maxConsec}" dir="ltr"></label>
+      <label class="f">سقف اضافه‌کار هر نفر (ساعت)<input type="number" min="0" max="200" id="auto-cap" value="${autoState.capH}" dir="ltr"></label></div>
+    ${autoState.msg ? `<div class="msg${/اضافه شد/.test(autoState.msg) ? ' ok' : ''}">${esc(autoState.msg)}</div>` : ''}
+    <div class="bar"><button class="btn primary" data-act="autorun">محاسبهٔ پیشنهاد</button><button class="btn" data-act="autoclose">بستن</button>
+      <span class="note">حداقل فاصلهٔ بین شیفت‌ها: ${N(fa(DB.cfg.settings.minRestH))} ساعت (تنظیمات)</span></div>${res}</div>`;
+}
+function autoRun() {
+  autoState.msg = '';
+  if (ui.dept === 'all' && DB.cfg.depts.length > 1) { autoState.msg = 'ابتدا بالای صفحه یک بخش را انتخاب کنید تا پیشنهاد فقط برای همان بخش محاسبه شود.'; autoState.result = null; return; }
+  for (const el of $$('[data-need]')) autoState.need[el.dataset.need] = Math.max(0, Math.min(50, parseInt(toLatin(el.value), 10) || 0));
+  autoState.maxConsec = Math.max(1, Math.min(31, parseInt(toLatin($('#auto-consec').value), 10) || 6));
+  autoState.capH = Math.max(0, Math.min(200, parseFloat(toLatin($('#auto-cap').value)) || 0));
+  const { a, b } = monthInfo();
+  autoState.result = Core.suggestSchedule(dbv(), { people: visiblePeople().map((p) => p.id), a, b, need: autoState.need, maxConsec: autoState.maxConsec, capMin: Math.round(autoState.capH * 60) });
+  if (!autoState.result.changes.length && !autoState.result.unfilled.length) autoState.msg = 'نیازی تعریف نشده یا همهٔ خانه‌ها پر است.';
 }
 
 /* ---------- تب: تنظیمات و پشتیبان ---------- */
@@ -853,14 +1010,14 @@ function viewReq() {
   const forms = !mine ? `<div class="panel"><div class="note">این حساب به فردی در فهرست پرسنل وصل نیست و نمی‌تواند درخواست ثبت کند.</div></div>` : `
     <form class="panel" id="f-leave" autocomplete="off"><h2>درخواست مرخصی</h2>
       <label class="f">نوع<select name="code">${['LV', 'LU', 'SK'].map((c) => `<option value="${c}">${SPECIAL[c].name}</option>`).join('')}</select></label>
-      <label class="f">از تاریخ (مثلاً ۱۴۰۵/۰۷/۱۲)<input name="from" dir="ltr" required></label>
-      <label class="f">تا تاریخ<input name="to" dir="ltr" required></label>
+      <label class="f">از تاریخ (مثلاً ۱۴۰۵/۰۷/۱۲)<input name="from" data-dp dir="ltr" required placeholder="۱۴۰۵/۰۷/۱۲"></label>
+      <label class="f">تا تاریخ<input name="to" data-dp dir="ltr" required placeholder="۱۴۰۵/۰۷/۱۲"></label>
       <label class="f">توضیح<input name="note" maxlength="300"></label>
       <div class="bar"><button class="btn primary" type="submit">ثبت درخواست</button><span id="f-leave-msg"></span></div></form>
     <form class="panel" id="f-swap" autocomplete="off"><h2>جابه‌جایی شیفت با همکار</h2>
       <label class="f">همکار<select name="peerId">${reqState.peers.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></label>
-      <label class="f">روز شیفت شما<input name="d1" dir="ltr" required></label>
-      <label class="f">روز شیفت همکار (اگر همان روز است، همان تاریخ را بنویسید)<input name="d2" dir="ltr" required></label>
+      <label class="f">روز شیفت شما<input name="d1" data-dp dir="ltr" required placeholder="۱۴۰۵/۰۷/۱۲"></label>
+      <label class="f">روز شیفت همکار (اگر همان روز است، همان تاریخ را بنویسید)<input name="d2" data-dp dir="ltr" required placeholder="۱۴۰۵/۰۷/۱۲"></label>
       <label class="f">توضیح<input name="note" maxlength="300"></label>
       <div class="bar"><button class="btn primary" type="submit">ارسال برای همکار</button><span id="f-swap-msg"></span></div>
       <div class="note">ابتدا همکار می‌پذیرد، سپس مدیر تأیید می‌کند و برنامه خودکار تغییر می‌کند.</div></form>`;
@@ -889,6 +1046,7 @@ function sessionLost() {
 }
 let renderTok = 0;
 async function render() {
+  dpClose();
   const app = $('#app');
   if (!DB.cfg) { app.innerHTML = '<div class="panel empty"><b>در حال بارگذاری…</b></div>'; return; }
   if (isServer() && !ME.user) {
@@ -932,13 +1090,15 @@ function showText(title, text) {
   const ta = $('#textbox-area'); ta.value = text; ta.focus(); ta.select();
 }
 async function saveFile(filename, data, label) {
+  const binary = typeof data !== 'string';
+  const MIME = { xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
   if (Store.dl) {
     try { await Store.dl.save({ filename, data }); return true; }
     catch (e) { if (e && e.code === 'declined') return false; }
   } else if (!window.claude) {
     // صفحهٔ معمولی (سرور یا فایل محلی): دانلود مستقیم مرورگر
     try {
-      const url = URL.createObjectURL(new Blob([data], { type: 'text/plain;charset=utf-8' }));
+      const url = URL.createObjectURL(new Blob([data], { type: binary ? (MIME[filename.split('.').pop()] || 'application/octet-stream') : 'text/plain;charset=utf-8' }));
       const a = document.createElement('a');
       a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 3000);
@@ -1099,6 +1259,22 @@ document.addEventListener('click', async (e) => {
     case 'repmonth': { const m = monthInfo(); ui.rep.from = m.a; ui.rep.to = m.b; ui.rep.dept = repDept(); return render(); }
     case 'repweek': { const T = todayJdn(), s = T - weekdayOf(T); ui.rep.from = s; ui.rep.to = s + 6; ui.rep.dept = repDept(); return render(); }
     case 'reptoday': { const T = todayJdn(); ui.rep.from = T; ui.rep.to = T; ui.rep.dept = repDept(); return render(); }
+    case 'repxlsx': { ui.rep.dept = repDept(); const x = xlsxReport(); const ok = await saveFile(x.name, x.data, 'Excel'); if (ok) flash('فایل ذخیره شد.', true, '#rep-msg'); return; }
+    case 'schedxlsx': { const x = xlsxRoster(); const ok = await saveFile(x.name, x.data, 'Excel'); if (ok) flash('فایل ذخیره شد.', true); return; }
+    case 'repprint': { const R = buildReport(); printView('گزارش کارکرد پرسنل', `${N(fmtDate(R.from))} تا ${N(fmtDate(R.to))}`, $$('#main .tw')); return; }
+    case 'schedprint': {
+      const d = ui.dept === 'all' ? 'همهٔ بخش‌ها' : ui.dept === 'none' ? 'بدون بخش' : (dept(ui.dept) || {}).name || '';
+      printView(`برنامهٔ شیفت ${MONTHS[ui.jm - 1]} ${fa(ui.jy)}`, esc(d), $$('#main .rwrap, #main .legend')); return;
+    }
+    case 'autoopen': autoState.open = true; autoState.result = null; autoState.msg = ''; return render();
+    case 'autoclose': autoState.open = false; autoState.result = null; return render();
+    case 'autorun': autoRun(); return render();
+    case 'autoapply': {
+      const R = autoState.result; if (!R || !R.changes.length) return;
+      const st = []; for (const c of R.changes) setAssign(c.pid, c.j, c.code, st);
+      finishStroke(st, 'پیشنهاد خودکار'); autoState.result = null; autoState.msg = `${fa(st.length)} خانه به برنامه اضافه شد.`;
+      return render();
+    }
     case 'repcsv': { ui.rep.dept = repDept(); const c = csvText(); const ok = await saveFile(c.name, c.text, 'متن CSV'); if (ok) flash('فایل ذخیره شد.', true, '#rep-msg'); return; }
     /* حساب و کاربران (حالت سرور) */
     case 'logout': {

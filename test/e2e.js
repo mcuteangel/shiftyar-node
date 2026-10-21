@@ -173,6 +173,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const dA = Core.fmtDateLatin(Core.todayJdn() + 5), dB = Core.fmtDateLatin(Core.todayJdn() + 6);
   await staff.click('[data-tab="req"]'); await sleep(500);
   ok(await staff.locator('#f-leave').count() === 1 && await staff.locator('#f-swap').count() === 1, 'فرم‌های مرخصی و جابه‌جایی نمایش داده می‌شود');
+  // انتخابگر تاریخ
+  await staff.click('#f-leave [name=to]'); await sleep(200);
+  ok(await staff.locator('#dp').count() === 1, 'انتخابگر تاریخ باز شد');
+  await staff.screenshot({ path: path.join(OUT, '9a-datepicker.png') });
+  const h1 = await text(staff, '#dp .dph b');
+  await staff.click('#dp [data-dpm="1"]'); const h2 = await text(staff, '#dp .dph b');
+  ok(h1 !== h2, 'ماه بعد در انتخابگر: ' + h1 + ' ← ' + h2);
+  await staff.click('#dp [data-dpm="-1"]'); await staff.click('#dp .dpd.today'); await sleep(150);
+  ok(await staff.inputValue('#f-leave [name=to]') === Core.fmtDateLatin(Core.todayJdn()) && await staff.locator('#dp').count() === 0, 'انتخاب روز مقدار را می‌نویسد و انتخابگر بسته می‌شود');
   await staff.fill('#f-leave [name=from]', 'خراب'); await staff.fill('#f-leave [name=to]', dB); await staff.click('#f-leave button[type=submit]'); await sleep(300);
   ok(/تاریخ را به شکل/.test(await text(staff, '#f-leave-msg')), 'تاریخ نامعتبر پیام می‌دهد');
   await staff.fill('#f-leave [name=from]', dA); await staff.fill('#f-leave [name=note]', 'سفر'); await staff.click('#f-leave button[type=submit]'); await sleep(800);
@@ -191,6 +200,39 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const got = await staff.evaluate(async (j) => (await (await fetch(`/api/assign?from=${j}&to=${j}`)).json()).assign, jd);
   ok(Object.values(got).some((m) => m[jd] === 'LV'), 'مرخصی روی برنامهٔ فرد اعمال شد');
   await staff.screenshot({ path: path.join(OUT, '9-staff-requests.png'), fullPage: true });
+
+
+  // پیشنهاد خودکار، Excel و PDF (ادمین)
+  await admin2.click('[data-tab="sched"]'); await sleep(600);
+  const deptVals = await admin2.locator('#f-dept option').evaluateAll((os) => os.map((o) => o.value));
+  await admin2.selectOption('#f-dept', deptVals[1]); await sleep(400);
+  await admin2.click('[data-act="autoopen"]'); await sleep(300);
+  await admin2.fill('[data-need="M"]', '1'); await admin2.fill('[data-need="A"]', '1'); await admin2.fill('[data-need="N"]', '0');
+  await admin2.click('[data-act="autorun"]'); await sleep(500);
+  const autoTxt = await text(admin2, '#autopanel');
+  ok(/خانه پیشنهاد شد/.test(autoTxt), 'پیشنهاد خودکار محاسبه شد: ' + autoTxt.slice(autoTxt.indexOf('خانه') - 6, autoTxt.indexOf('خانه') + 40));
+  const beforeCells = await admin2.locator('td.cell .c').count();
+  await admin2.click('[data-act="autoapply"]'); await sleep(900);
+  const afterCells = await admin2.locator('td.cell .c').count();
+  ok(afterCells > beforeCells + 10, `پیشنهاد روی برنامه اعمال شد (${beforeCells} ← ${afterCells})`);
+  ok(/ذخیره شد/.test(await text(admin2, '#savestate')), 'پیشنهاد اعمال‌شده روی سرور ذخیره شد');
+  await admin2.click('[data-act="undo"]'); await sleep(600);
+  ok(await admin2.locator('td.cell .c').count() === beforeCells, 'بازگردانی پیشنهاد کار می‌کند');
+  await admin2.screenshot({ path: path.join(OUT, '10-autoplan.png') });
+  const [dl] = await Promise.all([admin2.waitForEvent('download'), admin2.click('[data-act="schedxlsx"]')]);
+  const xp = path.join(OUT, 'roster.xlsx'); await dl.saveAs(xp);
+  ok(/\.xlsx$/.test(dl.suggestedFilename()) && fs.statSync(xp).size > 1000 && fs.readFileSync(xp).slice(0, 2).toString() === 'PK', 'خروجی Excel برنامه دانلود شد: ' + dl.suggestedFilename());
+  await admin2.click('[data-tab="rep"]'); await sleep(500);
+  const [dl2] = await Promise.all([admin2.waitForEvent('download'), admin2.click('[data-act="repxlsx"]')]);
+  await dl2.saveAs(path.join(OUT, 'report.xlsx'));
+  ok(/^report-.*\.xlsx$/.test(dl2.suggestedFilename()), 'خروجی Excel گزارش دانلود شد');
+  await admin2.evaluate(() => { window.print = () => { window.__printed = true; }; });
+  await admin2.click('[data-act="repprint"]'); await sleep(300);
+  ok(await admin2.evaluate(() => window.__printed === true && !!document.querySelector('#printarea table')), 'نمای چاپ ساخته و چاپ فراخوانی شد');
+  await admin2.emulateMedia({ media: 'print' });
+  await admin2.pdf({ path: path.join(OUT, 'report.pdf'), landscape: true, format: 'A4', printBackground: true });
+  await admin2.emulateMedia({ media: 'screen' });
+  ok(fs.statSync(path.join(OUT, 'report.pdf')).size > 5000, 'PDF گزارش تولید شد');
 
   // تم تاریک
   const dark = await newCtx({ colorScheme: 'dark' });
