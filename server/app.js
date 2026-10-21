@@ -628,6 +628,69 @@ function createApp(opts = {}) {
     return { request: getReq(ctx.user, id) };
   });
 
+  /* ---------- ترجیحات و درخواست روز برای برنامه‌ریزی خودکار ---------- */
+  const OT_KINDS = ['none', 'normal', 'more'];
+  const canEditPrefs = (user, pid) => user.role === 'admin' || (user.personId && user.personId === pid) || (user.role === 'manager' && scope(user).write.has(pid));
+  const wishRow = (r) => ({ id: r.id, pid: r.person_id, j: r.day, kind: r.kind, code: r.code || null, note: r.note });
+  route('GET', '/api/prefs', 'user', (ctx) => {
+    const sc = scope(ctx.user), prefs = {};
+    for (const r of q('SELECT person_id, data FROM prefs').all()) {
+      if (sc.read && !sc.read.has(r.person_id)) continue;
+      try { prefs[r.person_id] = JSON.parse(r.data); } catch (_) { /* نادیده */ }
+    }
+    const wishes = q('SELECT * FROM wishes ORDER BY day, id').all().filter((r) => !sc.read || sc.read.has(r.person_id)).map(wishRow);
+    return { prefs, wishes };
+  });
+  route('PUT', '/api/prefs/([A-Za-z0-9_-]+)', 'user', (ctx) => {
+    const pid = ctx.params[0];
+    const p = personRow(pid);
+    if (!p) throw new HttpError(404, 'فرد پیدا نشد.');
+    if (!canEditPrefs(ctx.user, pid)) throw new HttpError(403, 'اجازهٔ ویرایش ترجیحات این فرد را ندارید.');
+    const b = ctx.body, out = { shift: {}, ot: 'normal' };
+    if (b.ot !== undefined) { if (!OT_KINDS.includes(b.ot)) throw bad('گزینهٔ اضافه‌کار نامعتبر است.'); out.ot = b.ot; }
+    const codes = new Set(q('SELECT code FROM shifts').all().map((r) => r.code));
+    for (const [c, w] of Object.entries(b.shift && typeof b.shift === 'object' ? b.shift : {})) {
+      if (!codes.has(c)) throw bad('کد شیفت نامعتبر است.');
+      const n = intIn(w, -2, 2, 'اولویت شیفت');
+      if (n) out.shift[c] = n;
+    }
+    DBM.tx(db, () => {
+      q('INSERT INTO prefs(person_id, data) VALUES(?, ?) ON CONFLICT(person_id) DO UPDATE SET data = excluded.data').run(pid, JSON.stringify(out));
+      writeLog(ctx.user, `ترجیحات برنامه‌ریزی ${persName(p)} ثبت شد`);
+    });
+    return { prefs: out };
+  });
+  route('POST', '/api/wishes', 'user', (ctx) => {
+    const b = ctx.body, pid = typeof b.pid === 'string' && b.pid ? b.pid : ctx.user.personId;
+    const p = pid && personRow(pid);
+    if (!p) throw bad('فرد مشخص نیست.');
+    if (!canEditPrefs(ctx.user, pid)) throw new HttpError(403, 'اجازهٔ ثبت درخواست برای این فرد را ندارید.');
+    if (!['want', 'off', 'avoid'].includes(b.kind)) throw bad('نوع درخواست نامعتبر است.');
+    const today = Core.todayJdn(), day = intIn(b.day, today - 1, today + 400, 'روز');
+    let code = '';
+    if (b.kind !== 'off' && b.code) {
+      if (typeof b.code !== 'string' || !q('SELECT 1 FROM shifts WHERE code = ?').get(b.code)) throw bad('کد شیفت نامعتبر است.');
+      code = b.code;
+    }
+    if (b.kind === 'want' && !code) throw bad('شیفت مورد نظر را انتخاب کنید.');
+    const note = str(b.note, 200, 'توضیح');
+    if (q('SELECT COUNT(*) n FROM wishes WHERE person_id = ?').get(pid).n >= 100) throw bad('حداکثر ۱۰۰ درخواست برای هر نفر.');
+    if (q('SELECT 1 FROM wishes WHERE person_id = ? AND day = ? AND kind = ? AND code = ?').get(pid, day, b.kind, code)) throw bad('این درخواست قبلاً ثبت شده است.');
+    const id = DBM.tx(db, () => {
+      const r = q('INSERT INTO wishes(person_id, day, kind, code, note, created_at) VALUES(?, ?, ?, ?, ?, ?)').run(pid, day, b.kind, code, note, now());
+      writeLog(ctx.user, `درخواست روز برای برنامه‌ریزی: ${persName(p)} — ${Core.fmtDate(day)} (${{ want: 'می‌خواهد', off: 'آف', avoid: 'نمی‌خواهد' }[b.kind]}${code ? ' ' + code : ''})`);
+      return r.lastInsertRowid;
+    });
+    return { wish: wishRow(q('SELECT * FROM wishes WHERE id = ?').get(id)) };
+  });
+  route('DELETE', '/api/wishes/(\\d+)', 'user', (ctx) => {
+    const r = q('SELECT * FROM wishes WHERE id = ?').get(+ctx.params[0]);
+    if (!r) throw new HttpError(404, 'درخواست پیدا نشد.');
+    if (!canEditPrefs(ctx.user, r.person_id)) throw new HttpError(403, 'اجازهٔ حذف ندارید.');
+    q('DELETE FROM wishes WHERE id = ?').run(r.id);
+    return { ok: true };
+  });
+
   route('GET', '/api/log', 'admin', (ctx) => {
     const n = Math.min(500, Math.max(1, parseInt(ctx.url.searchParams.get('limit'), 10) || 100));
     return { items: q('SELECT ts, who, text FROM log ORDER BY id DESC LIMIT ?').all(n).map((r) => ({ t: r.ts, who: r.who, x: r.text })) };

@@ -45,6 +45,12 @@ CREATE TABLE IF NOT EXISTS requests (
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, decided_by TEXT NOT NULL DEFAULT '', decided_at INTEGER);
 CREATE INDEX IF NOT EXISTS requests_person ON requests(person_id, status);
 CREATE INDEX IF NOT EXISTS requests_peer ON requests(peer_id, status);
+CREATE TABLE IF NOT EXISTS prefs (person_id TEXT PRIMARY KEY REFERENCES people(id) ON DELETE CASCADE, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS wishes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+  day INTEGER NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('want','off','avoid')), code TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS wishes_person ON wishes(person_id, day);
 CREATE TABLE IF NOT EXISTS log (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, user_id INTEGER, who TEXT NOT NULL DEFAULT '', text TEXT NOT NULL);
 `;

@@ -124,7 +124,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await login(staff, '1001', temps['1001']);
   await forceChange(staff, temps['1001'], 'Staff#pass1');
   const tabsStaff = await staff.locator('nav.tabs button').allInnerTexts();
-  ok(JSON.stringify(tabsStaff) === JSON.stringify(['برنامه من', 'گزارش من', 'درخواست‌ها', 'حساب من']), 'تب‌های پرسنل: ' + tabsStaff.join('، '));
+  ok(JSON.stringify(tabsStaff) === JSON.stringify(['برنامه من', 'گزارش من', 'درخواست‌ها', 'ترجیحات', 'حساب من']), 'تب‌های پرسنل: ' + tabsStaff.join('، '));
   ok(await staff.locator('[data-brush]').count() === 0, 'پرسنل قلم ویرایش ندارد');
   ok(await staff.locator('.pc-day.cell .c').count() === 4, 'پرسنل شیفت‌های خودش را می‌بیند');
   const before = await staff.locator('.pc-day .c').count();
@@ -202,6 +202,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await staff.screenshot({ path: path.join(OUT, '9-staff-requests.png'), fullPage: true });
 
 
+  // ترجیحات پرسنل
+  await staff.click('[data-tab="prefs"]'); await sleep(500);
+  ok(await staff.locator('#f-prefs').count() === 1 && await staff.locator('#pf-person').count() === 0, 'پرسنل فقط ترجیحات خودش را می‌بیند');
+  await staff.selectOption('#f-prefs [name=ot]', 'more'); await staff.selectOption('#f-prefs [name="sh:N"]', '-2');
+  await staff.click('#f-prefs button[type=submit]'); await sleep(500);
+  ok(/ذخیره شد/.test(await text(staff, '#f-prefs-msg')), 'ترجیحات ذخیره شد');
+  await staff.fill('#f-wish [name=day]', Core.fmtDateLatin(Core.todayJdn())); await staff.selectOption('#f-wish [name=kind]', 'want'); await staff.selectOption('#f-wish [name=code]', 'A');
+  await staff.click('#f-wish button[type=submit]'); await sleep(700);
+  ok(await staff.locator('.req-item').count() === 1, 'درخواست روز ثبت شد');
+  await staff.screenshot({ path: path.join(OUT, '9b-prefs.png'), fullPage: true });
+
   // پیشنهاد خودکار، Excel و PDF (ادمین)
   await admin2.click('[data-tab="sched"]'); await sleep(600);
   const deptVals = await admin2.locator('#f-dept option').evaluateAll((os) => os.map((o) => o.value));
@@ -211,6 +222,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await admin2.click('[data-act="autorun"]'); await sleep(500);
   const autoTxt = await text(admin2, '#autopanel');
   ok(/خانه پیشنهاد شد/.test(autoTxt), 'پیشنهاد خودکار محاسبه شد: ' + autoTxt.slice(autoTxt.indexOf('خانه') - 6, autoTxt.indexOf('خانه') + 40));
+  ok(/۱ از ۱ درخواست روز رعایت شد/.test(autoTxt), 'درخواست روز پرسنل در پیشنهاد لحاظ شد: ' + autoTxt.slice(0, 0) + (autoTxt.match(/[۰-۹]+ از [۰-۹]+ درخواست[^.]*/) || ['؟'])[0]);
   const beforeCells = await admin2.locator('td.cell .c').count();
   await admin2.click('[data-act="autoapply"]'); await sleep(900);
   const afterCells = await admin2.locator('td.cell .c').count();

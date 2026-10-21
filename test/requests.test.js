@@ -163,3 +163,37 @@ test('جابه‌جایی: عدم پذیرش همکار، مدیر خودش و �
   const rev = (await sA.get('/api/rev')).data;
   assert.ok(rev.reqRev > 0);
 });
+
+test('ترجیحات و درخواست روز: ثبت، دسترسی و اعتبارسنجی', async () => {
+  let r = await sA.put('/api/prefs/p1', { ot: 'more', shift: { N: -2, A: 1 } });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.deepEqual(r.data.prefs, { shift: { N: -2, A: 1 }, ot: 'more' });
+  assert.equal((await sA.put('/api/prefs/p2', { ot: 'none' })).status, 403, 'پرسنل برای همکار نمی‌تواند');
+  assert.equal((await mgr2.put('/api/prefs/p1', { ot: 'none' })).status, 403, 'مدیر بخش دیگر نمی‌تواند');
+  assert.equal((await mgr1.put('/api/prefs/p2', { ot: 'none', shift: { M: 2 } })).status, 200, 'مدیر بخش می‌تواند');
+  assert.equal((await sA.put('/api/prefs/p1', { ot: 'lots' })).status, 400);
+  assert.equal((await sA.put('/api/prefs/p1', { shift: { ZZ: 1 } })).status, 400);
+  assert.equal((await sA.put('/api/prefs/p1', { shift: { M: 5 } })).status, 400);
+
+  r = await sA.post('/api/wishes', { day: T + 8, kind: 'want', code: 'N', note: 'امتحان' });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const id = r.data.wish.id;
+  assert.equal((await sA.post('/api/wishes', { day: T + 8, kind: 'want', code: 'N' })).status, 400, 'تکراری');
+  assert.equal((await sA.post('/api/wishes', { day: T + 8, kind: 'want' })).status, 400, 'want بدون شیفت');
+  assert.equal((await sA.post('/api/wishes', { day: T + 900, kind: 'off' })).status, 400, 'خیلی دور');
+  assert.equal((await sA.post('/api/wishes', { pid: 'p2', day: T + 9, kind: 'off' })).status, 403);
+  assert.equal((await mgr1.post('/api/wishes', { pid: 'p2', day: T + 9, kind: 'off' })).status, 200);
+  assert.equal((await sD.post('/api/wishes', { day: T + 9, kind: 'avoid', code: 'N' })).status, 200);
+
+  let g = (await sA.get('/api/prefs')).data;
+  assert.deepEqual(Object.keys(g.prefs), ['p1'], 'پرسنل فقط مال خودش را می‌بیند');
+  assert.deepEqual(g.wishes.map((w) => w.pid), ['p1']);
+  g = (await mgr1.get('/api/prefs')).data;
+  assert.deepEqual(Object.keys(g.prefs).sort(), ['p1', 'p2'], 'مدیر بخش اول: فقط بخش خودش');
+  assert.ok(!g.wishes.some((w) => w.pid === 'p4'));
+  assert.equal((await admin.get('/api/prefs')).data.wishes.length, 3);
+
+  assert.equal((await sB.req('DELETE', `/api/wishes/${id}`)).status, 403);
+  assert.equal((await sA.req('DELETE', `/api/wishes/${id}`)).status, 200);
+  assert.equal((await sA.req('DELETE', `/api/wishes/${id}`)).status, 404);
+});

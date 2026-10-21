@@ -177,4 +177,35 @@ t('پیشنهاد خودکار: سقف اضافه‌کار', () => {
   assert.ok(r.unfilled.length > 0);
 });
 
+t('پیشنهاد خودکار هوشمند: درخواست روز، آف، ترجیح شیفت و اضافه‌کار', () => {
+  const a = C.j2d(1405, 8, 1), b = a + 29, ids = (db) => db.people.map((p) => p.id);
+  const run = (extra) => { const db = mkDb(6); return { db, r: C.suggestSchedule(db, Object.assign({ people: ids(db), a, b, need: { M: 1, A: 1, N: 1 }, maxConsec: 6, capMin: 20 * 60 }, extra)) }; };
+  const at = (r, pid, j) => (r.changes.find((c) => c.pid === pid && c.j === j) || {}).code;
+  // want
+  let { r } = run({ wishes: [{ pid: 'p3', j: a + 9, kind: 'want', code: 'N' }] });
+  assert.strictEqual(at(r, 'p3', a + 9), 'N');
+  assert.ok(r.wishReport[0].ok);
+  // off: هیچ شیفتی در آن روز
+  ({ r } = run({ wishes: [{ pid: 'p1', j: a + 4, kind: 'off' }, { pid: 'p1', j: a + 5, kind: 'off' }] }));
+  assert.ok(!at(r, 'p1', a + 4) && !at(r, 'p1', a + 5));
+  assert.ok(r.wishReport.every((x) => x.ok));
+  // ترجیح شیفت: کسی که شب نمی‌خواهد کمتر شب بگیرد
+  const count = (r, pid, code) => r.changes.filter((c) => c.pid === pid && c.code === code).length;
+  const base = run({}).r, pref = run({ prefs: { p0: { shift: { N: -2, A: 2 } } } }).r;
+  assert.ok(count(pref, 'p0', 'N') < count(base, 'p0', 'N') || count(base, 'p0', 'N') === 0, `شب: ${count(base, 'p0', 'N')} → ${count(pref, 'p0', 'N')}`);
+  assert.ok(count(pref, 'p0', 'A') >= count(base, 'p0', 'A'));
+  // اضافه‌کار بیشتر / هیچ
+  const load = (r, pid) => r.summary.find((x) => x.pid === pid).load;
+  const more = run({ prefs: { p1: { ot: 'more' } }, capMin: 40 * 60 }).r, none = run({ prefs: { p1: { ot: 'none' } } }).r;
+  assert.ok(load(more, 'p1') > load(none, 'p1'), `${load(more, 'p1')} > ${load(none, 'p1')}`);
+  assert.ok(load(none, 'p1') <= none.summary[0].target, 'بدون اضافه‌کار از موظفی نمی‌گذرد');
+  // avoid سخت نیست ولی در صورت وجود جایگزین رعایت می‌شود
+  ({ r } = run({ wishes: [{ pid: 'p2', j: a + 2, kind: 'avoid', code: 'N' }] }));
+  assert.notStrictEqual(at(r, 'p2', a + 2), 'N');
+  // want ناممکن (روز پرشده) گزارش می‌شود
+  const db2 = mkDb(2, { p0: { [a]: 'M' } });
+  const r2 = C.suggestSchedule(db2, { people: ['p0', 'p1'], a, b: a + 2, need: {}, wishes: [{ pid: 'p0', j: a, kind: 'want', code: 'A' }] });
+  assert.strictEqual(r2.wishReport[0].ok, false);
+});
+
 console.log(results.join('\n'));

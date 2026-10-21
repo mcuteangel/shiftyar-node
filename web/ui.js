@@ -838,6 +838,7 @@ function autoPanel() {
     const added = {}; R.changes.forEach((c) => { added[c.pid] = (added[c.pid] || 0) + 1; });
     const un = R.unfilled.slice(0, 40).map((u) => `<li>${N(fmtDate(u.j))}: شیفت ${esc(u.code)} — ${N(fa(u.missing))} نفر کم است</li>`).join('');
     res = `<div class="note">${N(fa(R.changes.length))} خانه پیشنهاد شد${R.unfilled.length ? `؛ ${N(fa(R.unfilled.length))} مورد کمبود (به‌دلیل فاصلهٔ استراحت، روز کاریِ پیاپی یا سقف اضافه‌کار)` : '؛ همهٔ نیازها پوشش داده شد'}.</div>
+      ${wishBlock(R)}
       ${un ? `<details class="warns"><summary>کمبودها</summary><ul>${un}</ul></details>` : ''}
       <div class="tw"><table class="t"><thead><tr><th>نام</th><th class="n">شیفت جدید</th><th class="n">کارکرد پس از اعمال</th><th class="n">موظفی</th><th class="n">اضافه / کسر</th></tr></thead><tbody>${ps.map((p) => {
     const x = byP.get(p.id); if (!x) return '';
@@ -850,18 +851,29 @@ function autoPanel() {
     <div class="rows" style="gap:12px;flex-wrap:wrap">${fields}
       <label class="f">حداکثر روز کاری پشت‌سرهم<input type="number" min="1" max="31" id="auto-consec" value="${autoState.maxConsec}" dir="ltr"></label>
       <label class="f">سقف اضافه‌کار هر نفر (ساعت)<input type="number" min="0" max="200" id="auto-cap" value="${autoState.capH}" dir="ltr"></label></div>
+    ${isServer() ? `<label class="rows"><input type="checkbox" id="auto-prefs"${autoState.usePrefs === false ? '' : ' checked'}> <span>لحاظ کردن ترجیحات و درخواست روزهای پرسنل (تب «ترجیحات»)</span></label>` : ''}
     ${autoState.msg ? `<div class="msg${/اضافه شد/.test(autoState.msg) ? ' ok' : ''}">${esc(autoState.msg)}</div>` : ''}
     <div class="bar"><button class="btn primary" data-act="autorun">محاسبهٔ پیشنهاد</button><button class="btn" data-act="autoclose">بستن</button>
       <span class="note">حداقل فاصلهٔ بین شیفت‌ها: ${N(fa(DB.cfg.settings.minRestH))} ساعت (تنظیمات)</span></div>${res}</div>`;
 }
-function autoRun() {
+function wishBlock(R) {
+  const w = R.wishReport || [];
+  if (!w.length) return '';
+  const bad = w.filter((x) => !x.ok), ok = w.length - bad.length;
+  const line = (x) => { const p = person(x.pid); return `<li>${esc(p ? pname(p) : '؟')} — ${N(fmtDate(x.j))}: ${WISH_KIND[x.kind]}${x.code ? ' (' + esc(x.code) + ')' : ''}</li>`; };
+  return `<div class="note">${N(fa(ok))} از ${N(fa(w.length))} درخواست روز رعایت شد.</div>${bad.length ? `<details class="warns" open><summary>${N(fa(bad.length))} درخواست رعایت نشد</summary><ul>${bad.map(line).join('')}</ul></details>` : ''}`;
+}
+async function autoRun() {
   autoState.msg = '';
   if (ui.dept === 'all' && DB.cfg.depts.length > 1) { autoState.msg = 'ابتدا بالای صفحه یک بخش را انتخاب کنید تا پیشنهاد فقط برای همان بخش محاسبه شود.'; autoState.result = null; return; }
   for (const el of $$('[data-need]')) autoState.need[el.dataset.need] = Math.max(0, Math.min(50, parseInt(toLatin(el.value), 10) || 0));
   autoState.maxConsec = Math.max(1, Math.min(31, parseInt(toLatin($('#auto-consec').value), 10) || 6));
   autoState.capH = Math.max(0, Math.min(200, parseFloat(toLatin($('#auto-cap').value)) || 0));
   const { a, b } = monthInfo();
-  autoState.result = Core.suggestSchedule(dbv(), { people: visiblePeople().map((p) => p.id), a, b, need: autoState.need, maxConsec: autoState.maxConsec, capMin: Math.round(autoState.capH * 60) });
+  if ($('#auto-prefs')) autoState.usePrefs = $('#auto-prefs').checked;
+  let prefs, wishes;
+  if (isServer() && autoState.usePrefs) { await loadPrefs(); prefs = prefsState.prefs; wishes = prefsState.wishes; }
+  autoState.result = Core.suggestSchedule(dbv(), { people: visiblePeople().map((p) => p.id), a, b, need: autoState.need, maxConsec: autoState.maxConsec, capMin: Math.round(autoState.capH * 60), prefs, wishes });
   if (!autoState.result.changes.length && !autoState.result.unfilled.length) autoState.msg = 'نیازی تعریف نشده یا همهٔ خانه‌ها پر است.';
 }
 
@@ -1027,13 +1039,54 @@ function viewReq() {
       <h2>نیازمند اقدام شما (${N(fa(todo.length))})</h2>${todo.map(reqRow).join('') || '<div class="note">موردی نیست.</div>'}
       <h2>سایر درخواست‌ها</h2>${rest.map(reqRow).join('') || '<div class="note">درخواستی ثبت نشده است.</div>'}</div></div>`;
 }
+/* ---------- ترجیحات و درخواست روز (برای پیشنهاد خودکار) ---------- */
+const prefsState = { prefs: {}, wishes: [], pid: null, msg: '' };
+const PREF_LABELS = { '-2': 'اصلاً نمی‌خواهم', '-1': 'ترجیح می‌دهم کمتر', '0': 'بی‌تفاوت', '1': 'ترجیح می‌دهم بیشتر', '2': 'خیلی می‌خواهم' };
+const OT_LABELS = { none: 'اضافه‌کار نمی‌خواهم', normal: 'عادی', more: 'اضافه‌کار بیشتر می‌خواهم' };
+const WISH_KIND = { off: 'آف می‌خواهم', want: 'این شیفت را می‌خواهم', avoid: 'این شیفت را نمی‌خواهم' };
+async function loadPrefs() {
+  try { const r = await Store.api('GET', '/api/prefs'); prefsState.prefs = r.prefs; prefsState.wishes = r.wishes; prefsState.msg = ''; }
+  catch (e) { prefsState.msg = e.message; }
+}
+function prefsPeople() {
+  const me = ME.user;
+  if (me.role === 'staff') return DB.cfg.people.filter((p) => p.id === me.personId);
+  return sortedPeople();
+}
+function viewPrefs() {
+  const ps = prefsPeople();
+  if (!ps.length) return `<div class="panel empty"><b>این حساب به فردی وصل نیست</b><span>از مدیر سیستم بخواهید حساب شما را به یکی از پرسنل وصل کند.</span></div>`;
+  if (!ps.some((p) => p.id === prefsState.pid)) prefsState.pid = (ps.find((p) => p.id === ME.user.personId) || ps[0]).id;
+  const pid = prefsState.pid, pf = prefsState.prefs[pid] || { shift: {}, ot: 'normal' };
+  const mineWishes = prefsState.wishes.filter((w) => w.pid === pid).sort((x, y) => x.j - y.j);
+  const picker = ps.length > 1 ? `<label class="f">فرد<select id="pf-person">${ps.map((p) => `<option value="${esc(p.id)}"${p.id === pid ? ' selected' : ''}>${esc(pname(p))}</option>`).join('')}</select></label>` : '';
+  const sh = simpleShifts();
+  return `${prefsState.msg ? `<div class="msg">${esc(prefsState.msg)}</div>` : ''}
+    <div class="note">این موارد فقط در «پیشنهاد خودکار برنامه» لحاظ می‌شود. «آف» و «اضافه‌کار نمی‌خواهم» قید جدی‌اند؛ بقیه ترجیح‌اند و اگر برای پوشش شیفت‌ها ناچار باشیم ممکن است رعایت نشوند.</div>
+    <div class="split"><div style="display:flex;flex-direction:column;gap:12px">
+    ${picker ? `<div class="panel">${picker}</div>` : ''}
+    <form class="panel" id="f-prefs" autocomplete="off"><h2>ترجیحات من برای شیفت‌ها</h2>
+      <label class="f">اضافه‌کار<select name="ot">${Object.keys(OT_LABELS).map((k) => `<option value="${k}"${pf.ot === k ? ' selected' : ''}>${OT_LABELS[k]}</option>`).join('')}</select></label>
+      ${sh.map((s) => `<label class="f">${esc(s.code)} — ${esc(s.name)}<select name="sh:${esc(s.code)}">${Object.keys(PREF_LABELS).map((k) => `<option value="${k}"${(pf.shift[s.code] || 0) === +k ? ' selected' : ''}>${PREF_LABELS[k]}</option>`).join('')}</select></label>`).join('')}
+      <div class="bar"><button class="btn primary" type="submit">ذخیرهٔ ترجیحات</button><span id="f-prefs-msg"></span></div></form></div>
+    <div style="display:flex;flex-direction:column;gap:12px">
+    <form class="panel" id="f-wish" autocomplete="off"><h2>درخواست برای یک روز مشخص</h2>
+      <label class="f">تاریخ<input name="day" data-dp dir="ltr" required placeholder="۱۴۰۵/۰۷/۱۲"></label>
+      <label class="f">درخواست<select name="kind">${Object.keys(WISH_KIND).map((k) => `<option value="${k}">${WISH_KIND[k]}</option>`).join('')}</select></label>
+      <label class="f">شیفت (برای «آف» لازم نیست)<select name="code"><option value="">—</option>${sh.map((s) => `<option value="${esc(s.code)}">${esc(s.code)} — ${esc(s.name)}</option>`).join('')}</select></label>
+      <label class="f">توضیح<input name="note" maxlength="200"></label>
+      <div class="bar"><button class="btn primary" type="submit">ثبت درخواست</button><span id="f-wish-msg"></span></div></form>
+    <h2>درخواست‌های ثبت‌شده (${N(fa(mineWishes.length))})</h2>
+    ${mineWishes.map((w) => `<div class="panel req-item"><div>${N(fmtDate(w.j))} — ${WISH_KIND[w.kind]}${w.code ? ` (${esc(w.code)})` : ''}${w.note ? ` · ${esc(w.note)}` : ''}</div><div class="bar"><button class="btn sm danger" data-act="delwish" data-id="${w.id}">حذف</button></div></div>`).join('') || '<div class="note">درخواستی ثبت نشده است.</div>'}
+    </div></div>`;
+}
 function tabsFor() {
   if (!isServer()) return TABS;
   const r = role(), acct = ['acct', 'حساب من'];
-  const rq = ['req', 'درخواست‌ها'];
-  if (r === 'admin') return TABS.slice(0, 7).concat([rq, ['users', 'کاربران'], ['set', 'تنظیمات'], acct]);
-  if (r === 'manager') return [['sched', 'برنامه شیفت'], ['pcal', 'تقویم فرد'], ['rep', 'گزارش‌ها'], rq, acct];
-  return [['pcal', 'برنامه من'], ['rep', 'گزارش من'], rq, acct];
+  const rq = ['req', 'درخواست‌ها'], pf = ['prefs', 'ترجیحات'];
+  if (r === 'admin') return TABS.slice(0, 7).concat([rq, pf, ['users', 'کاربران'], ['set', 'تنظیمات'], acct]);
+  if (r === 'manager') return [['sched', 'برنامه شیفت'], ['pcal', 'تقویم فرد'], ['rep', 'گزارش‌ها'], rq, pf, acct];
+  return [['pcal', 'برنامه من'], ['rep', 'گزارش من'], rq, pf, acct];
 }
 let loginMsg = '';
 function sessionLost() {
@@ -1063,9 +1116,10 @@ async function render() {
   if (ui.tab === 'rep') { const r = repRange(); await Store.ensureRange(r.from, r.to); }
   if (ui.tab === 'users') await loadUsers();
   if (ui.tab === 'req') await loadReqs();
+  if (ui.tab === 'prefs') await loadPrefs();
   if (ui.tab === 'set' && isServer()) { try { DB.log = (await Store.api('GET', '/api/log?limit=100')).items; } catch (e) { DB.log = []; } }
   if (tok !== renderTok || (isServer() && !ME.user)) return;
-  const views = { sched: viewSched, pcal: viewPcal, people: viewPeople, depts: viewDepts, shifts: viewShifts, hol: viewHol, rep: viewRep, set: viewSet, acct: viewAcct, users: viewUsers, req: viewReq };
+  const views = { sched: viewSched, pcal: viewPcal, people: viewPeople, depts: viewDepts, shifts: viewShifts, hol: viewHol, rep: viewRep, set: viewSet, acct: viewAcct, users: viewUsers, req: viewReq, prefs: viewPrefs };
   const who = isServer() ? `<span class="note who">${esc(ME.user.display || ME.user.code)} · ${ROLE_NAMES[ME.user.role]}</span>` : '';
   app.innerHTML = `<div class="wrap">
     <div class="top"><div class="brand"><h1>شیفت‌یار</h1><small>برنامه‌ریز شیفت پرسنل</small></div>
@@ -1268,7 +1322,7 @@ document.addEventListener('click', async (e) => {
     }
     case 'autoopen': autoState.open = true; autoState.result = null; autoState.msg = ''; return render();
     case 'autoclose': autoState.open = false; autoState.result = null; return render();
-    case 'autorun': autoRun(); return render();
+    case 'autorun': await autoRun(); return render();
     case 'autoapply': {
       const R = autoState.result; if (!R || !R.changes.length) return;
       const st = []; for (const c of R.changes) setAssign(c.pid, c.j, c.code, st);
@@ -1282,6 +1336,10 @@ document.addEventListener('click', async (e) => {
       ME.user = null; clearInterval(Store.pollTimer);
       Store.pending = new Map(); Store.loaded = new Set(); DB.assign = {}; DB.cfg = defaultCfg();
       ui.undo = []; usersState.list = []; usersState.edit = null; usersState.notice = ''; loginMsg = '';
+      return render();
+    }
+    case 'delwish': {
+      try { await Store.api('DELETE', '/api/wishes/' + id); prefsState.msg = ''; } catch (err) { prefsState.msg = err.message; }
       return render();
     }
     case 'reqact': {
@@ -1368,6 +1426,7 @@ document.addEventListener('submit', (e) => {
 document.addEventListener('change', async (e) => {
   const t = e.target, cfg = DB.cfg;
   if (t.id === 'f-dept') { ui.dept = t.value; return render(); }
+  if (t.id === 'pf-person') { prefsState.pid = t.value; return render(); }
   if (t.id === 'pcal-person') { ui.pcalPerson = t.value; return refreshPcal(); }
   if (t.dataset.dcolor) { const d = dept(t.dataset.dcolor); if (d) { d.color = t.value; Store.touchCfg(); } return; }
   if (t.dataset.dname) { const d = dept(t.dataset.dname); if (d && t.value.trim()) { d.name = t.value.trim(); Store.touchCfg(); } return; }
@@ -1405,7 +1464,7 @@ document.addEventListener('input', (e) => {
 /* ---------- فرم‌های ورود، گذرواژه و کاربران (حالت سرور) ---------- */
 document.addEventListener('submit', async (e) => {
   const f = e.target;
-  if (!['f-login', 'f-pw', 'f-user', 'f-leave', 'f-swap'].includes(f.id)) return;
+  if (!['f-login', 'f-pw', 'f-user', 'f-leave', 'f-swap', 'f-prefs', 'f-wish'].includes(f.id)) return;
   e.preventDefault();
   const fd = new FormData(f);
   const btn = f.querySelector('button[type=submit]');
@@ -1429,6 +1488,15 @@ document.addEventListener('submit', async (e) => {
         if (force) { ME.user.mustChange = false; await Store.enterApp(); ui.tab = tabsFor()[0][0]; loginMsg = ''; await render(); flash('گذرواژهٔ جدید ذخیره شد.', true); }
         else { f.reset(); flash('گذرواژه تغییر کرد.', true, '#f-pw-msg'); }
       } catch (err) { await fail(err.message); }
+    } else if (f.id === 'f-prefs') {
+      const shift = {}; for (const [k, v] of fd.entries()) if (k.startsWith('sh:')) shift[k.slice(3)] = +v;
+      try { const r = await Store.api('PUT', '/api/prefs/' + prefsState.pid, { ot: fd.get('ot'), shift }); prefsState.prefs[prefsState.pid] = r.prefs; flash('ترجیحات ذخیره شد.', true, '#f-prefs-msg'); }
+      catch (err) { flash(err.message, false, '#f-prefs-msg'); }
+    } else if (f.id === 'f-wish') {
+      const day = parseDate(String(fd.get('day') || ''));
+      if (day == null) return flash('تاریخ را به شکل ۱۴۰۵/۰۷/۱۲ وارد کنید.', false, '#f-wish-msg');
+      try { await Store.api('POST', '/api/wishes', { pid: prefsState.pid, day, kind: fd.get('kind'), code: fd.get('code') || '', note: String(fd.get('note') || '') }); await render(); flash('درخواست ثبت شد.', true, '#f-wish-msg'); }
+      catch (err) { flash(err.message, false, '#f-wish-msg'); }
     } else if (f.id === 'f-leave' || f.id === 'f-swap') {
       const msg = '#' + f.id + '-msg', dt = (k) => parseDate(String(fd.get(k) || ''));
       const body = f.id === 'f-leave'

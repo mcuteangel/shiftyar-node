@@ -308,8 +308,11 @@
   /* ---------- پیشنهاد خودکار برنامه ---------- */
   /**
    * خانه‌های خالی را با شیفت پر می‌کند؛ هیچ خانهٔ پرشده‌ای را تغییر نمی‌دهد.
-   * o: { people: [id], a, b, need: {کد شیفت: تعداد در هر روز}, maxConsec, capMin }
-   * خروجی: { changes: [{pid, j, code}], unfilled: [{j, code, missing}], summary: [{pid, load, target}] }
+   * o: { people: [id], a, b, need: {کد شیفت: تعداد در هر روز}, maxConsec, capMin,
+   *      prefs: {pid: {shift: {کد: -2..2}, ot: 'none'|'normal'|'more'}},
+   *      wishes: [{pid, j, kind: 'want'|'off'|'avoid', code}] }
+   * wantها اول و در صورت امکان اعمال می‌شوند؛ offها قید سخت‌اند؛ avoid و ترجیح شیفت و اضافه‌کار امتیازی (نرم) هستند.
+   * خروجی: { changes, unfilled: [{j, code, missing}], summary: [{pid, load, target}], wishReport: [{pid, j, kind, code, ok}] }
    * قیدها: حداقل فاصلهٔ بین شیفت‌ها، حداکثر روز کاریِ پشت‌سرهم، سقف اضافه‌کار؛ تراز بار با کمترین کارکرد نسبت به موظفی.
    */
   function suggestSchedule(db, o) {
@@ -320,7 +323,20 @@
     const days = o.b - o.a + 1;
     let holN = 0; for (let j = o.a; j <= o.b; j++) if (hm[j]) holN++;
     const target = (days - holN) * S.dutyMin;
-    const cap = o.capMin > 0 ? o.capMin : 0;
+    const prefs = o.prefs || {};
+    const STEP = 180, MORE_EXTRA = 480;
+    const capFor = (pid) => {
+      const ot = (prefs[pid] || {}).ot;
+      if (ot === 'none') return 0;
+      if (o.capMin == null) return ot === 'more' ? MORE_EXTRA : null;
+      return o.capMin + (ot === 'more' ? MORE_EXTRA : 0);
+    };
+    const wishes = (o.wishes || []).filter((w) => w.j >= o.a && w.j <= o.b);
+    const offSet = new Set(), avoid = new Map();
+    for (const w of wishes) {
+      if (w.kind === 'off') offSet.add(w.pid + '|' + w.j);
+      else if (w.kind === 'avoid') avoid.set(w.pid + '|' + w.j + '|' + (w.code || '*'), 1);
+    }
     const people = (o.people || []).map((id) => db.people.find((p) => p.id === id)).filter(Boolean);
     const work = {}, load = {}, cnt = {};
     const isWork = (c) => !!c && !SPECIAL[c];
@@ -361,6 +377,16 @@
     };
     const codes = Object.keys(o.need || {}).filter((c) => o.need[c] > 0 && info(c)).sort((x, y) => info(y).m - info(x).m);
     const changes = [], unfilled = [];
+    const place = (p, j, code) => {
+      work[p.id][j] = code; load[p.id] += minutesOn(p, j, code);
+      cnt[p.id][code] = (cnt[p.id][code] || 0) + 1;
+      changes.push({ pid: p.id, j, code });
+    };
+    // درخواست‌های «این شیفت را می‌خواهم» اول و تا جای ممکن اعمال می‌شوند
+    for (const w of wishes.filter((x) => x.kind === 'want').sort((x, y) => x.j - y.j)) {
+      const p = people.find((q) => q.id === w.pid);
+      if (p && info(w.code) && !work[p.id][w.j] && !offSet.has(p.id + '|' + w.j) && fits(p.id, w.j, w.code)) place(p, w.j, w.code);
+    }
     for (let j = o.a; j <= o.b; j++) {
       const cover = {};
       for (const p of people) { const c = work[p.id][j]; if (isWork(c)) cover[c] = (cover[c] || 0) + 1; }
@@ -370,22 +396,30 @@
           let best = null, bs = null;
           for (let i = 0; i < people.length; i++) {
             const p = people[i];
-            if (work[p.id][j]) continue;
+            if (work[p.id][j] || offSet.has(p.id + '|' + j)) continue;
             const m = minutesOn(p, j, code);
-            if (cap > 0 || o.capMin === 0) { if (load[p.id] + m > target + cap) continue; }
+            const cp = capFor(p.id);
+            if (cp != null && load[p.id] + m > target + cp) continue;
             if (!fits(p.id, j, code)) continue;
-            const sc = [load[p.id], cnt[p.id][code] || 0, i];
+            const pf = prefs[p.id] || {};
+            let bias = -((pf.shift || {})[code] || 0) * STEP;
+            if (pf.ot === 'more') bias -= MORE_EXTRA;
+            if (avoid.has(p.id + '|' + j + '|' + code) || avoid.has(p.id + '|' + j + '|*')) bias += 100000;
+            const sc = [load[p.id] + bias, cnt[p.id][code] || 0, i];
             if (!bs || sc[0] < bs[0] || (sc[0] === bs[0] && (sc[1] < bs[1] || (sc[1] === bs[1] && sc[2] < bs[2])))) { best = p; bs = sc; }
           }
           if (!best) { unfilled.push({ j, code, missing }); break; }
-          work[best.id][j] = code; load[best.id] += minutesOn(best, j, code);
-          cnt[best.id][code] = (cnt[best.id][code] || 0) + 1;
-          changes.push({ pid: best.id, j, code });
+          place(best, j, code);
           missing--;
         }
       }
     }
-    return { changes, unfilled, summary: people.map((p) => ({ pid: p.id, load: Math.round(load[p.id]), target })) };
+    const wishReport = wishes.map((w) => {
+      const c = work[w.pid] ? work[w.pid][w.j] : undefined;
+      const ok = w.kind === 'want' ? c === w.code : w.kind === 'off' ? !isWork(c) : !(c && (w.code ? c === w.code : isWork(c)));
+      return { pid: w.pid, j: w.j, kind: w.kind, code: w.code || null, ok };
+    });
+    return { changes, unfilled, summary: people.map((p) => ({ pid: p.id, load: Math.round(load[p.id]), target })), wishReport };
   }
 
   const Core = {
