@@ -1,0 +1,49 @@
+name: CI
+
+# Runs lint (syntax) checks, the full test suite, and the bundle-sync
+# check on every push and pull request, so problems surface before merge.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Lint (syntax check, zero-dependency)
+        run: |
+          for f in server/*.js web/*.js test/*.js gen-sample.js; do
+            node --check "$f"
+          done
+
+      - name: Test
+        run: npm test
+
+      - name: Bundle sync check (shiftyar.html must match web/)
+        run: |
+          python3 build.py
+          if ! git diff --exit-code -- shiftyar.html; then
+            echo "::error::shiftyar.html is stale. Run 'python3 build.py' and commit the regenerated bundle (AGENTS.md section 3.3)."
+            exit 1
+          fi
