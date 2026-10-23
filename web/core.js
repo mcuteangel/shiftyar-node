@@ -131,6 +131,23 @@
     AB: { name: 'غیبت', short: 'غ', credit: false },
   };
   const CONTRACTS = { company: 'شرکتی', t4: 'تبصره ۴', official: 'رسمی' };
+  const WORK_TYPES = { rotating: 'شیفت در گردش', office: 'اداری' };
+
+  const defaultOfficePatterns = () => [
+    {
+      id: 'off_std',
+      name: 'اداری پیش‌فرض (شنبه تا چهارشنبه ۷:۳۰ تا ۱۴:۱۵، پنجشنبه ۷:۳۰ تا ۱۳:۲۰)',
+      days: {
+        0: { active: true, s: '07:30', e: '14:15' }, // شنبه
+        1: { active: true, s: '07:30', e: '14:15' }, // یکشنبه
+        2: { active: true, s: '07:30', e: '14:15' }, // دوشنبه
+        3: { active: true, s: '07:30', e: '14:15' }, // سه‌شنبه
+        4: { active: true, s: '07:30', e: '14:15' }, // چهارشنبه
+        5: { active: true, s: '07:30', e: '13:20' }, // پنجشنبه
+        6: { active: false, s: '07:30', e: '14:15' }, // جمعه
+      },
+    },
+  ];
 
   const defaultShifts = () => [
     { code: 'M', name: 'صبح', kind: 'simple', segs: [{ o: 0, s: '07:00', e: '13:30' }] },
@@ -166,11 +183,45 @@
     }
     return out;
   }
+  /** بررسی اینکه آیا یک شیفت اداری است */
+  function isOfficeShift(shifts, code) {
+    const s = shifts && shifts.find((x) => x.code === code);
+    return !!(s && s.isOffice);
+  }
+
+  /** ساعات کاری الگو برای یک روز هفته (wd: 0=شنبه تا 6=جمعه) */
+  function officePatternDay(pattern, wd) {
+    if (!pattern || !pattern.days) return null;
+    const d = pattern.days[wd] || pattern.days[String(wd)];
+    return (d && d.active) ? d : null;
+  }
+
+  /** بازه‌های دقیقه برای روز کاری اداری بر اساس الگو */
+  function officePatternIvs(pattern, wd) {
+    const d = officePatternDay(pattern, wd);
+    if (!d || !d.s || !d.e) return [];
+    const s = toMin(d.s), e = toMin(d.e);
+    return e > s ? [[s, e]] : [];
+  }
+
   /** بازه‌های یک شیفت (دقیقه از ۰۰:۰۰ روز شروع؛ مقدار بالاتر از ۱۴۴۰ یعنی روز بعد) */
   function shiftIvs(shifts, code, depth) {
     depth = depth || 0;
     const sh = shifts.find((s) => s.code === code);
     if (!sh || depth > 3) return [];
+    if (sh.isOffice && sh.officePattern) {
+      // اگر شیفت اختصاصی اداری باشد، به عنوان بازه پیش‌فرض شنبه تا چهارشنبه یا اولین بازه فعال استفاده می‌شود
+      const wd = sh.officePattern.days;
+      if (wd) {
+        for (let i = 0; i <= 6; i++) {
+          const d = wd[i] || wd[String(i)];
+          if (d && d.active && d.s && d.e) {
+            const s = toMin(d.s), e = toMin(d.e);
+            if (e > s) return [[s, e]];
+          }
+        }
+      }
+    }
     const all = [];
     if (sh.kind === 'combo') {
       for (const r of sh.refs || []) {
@@ -218,6 +269,16 @@
   }
 
   /* ---------- محاسبه برای یک نفر در بازه [a, b] (شماره روز ژولیانی) ---------- */
+  function findOfficePattern(db, p) {
+    if (p.workType !== 'office') return null;
+    const patterns = (db.settings && db.settings.officePatterns) || defaultOfficePatterns();
+    if (p.officePatternId) {
+      const found = patterns.find((pt) => pt.id === p.officePatternId);
+      if (found) return found;
+    }
+    return patterns[0] || defaultOfficePatterns()[0];
+  }
+
   function computeRange(db, p, a, b, hm) {
     const S = db.settings;
     hm = hm || holidayMap(S, db.holidays, a, b);
@@ -225,19 +286,35 @@
     const blocks = [];
     const counts = {};
     let credit = 0;
+    const isOff = p.workType === 'office';
+    const offPat = isOff ? findOfficePattern(db, p) : null;
+
     for (const k in mine) {
       const j = +k, code = mine[k];
       const inRange = j >= a && j <= b;
+      const wd = weekdayOf(j);
+      let dayStandardDuty = S.dutyMin;
+      if (isOff && offPat) {
+        const ivs = officePatternIvs(offPat, wd);
+        dayStandardDuty = ivsMinutes(ivs);
+      }
       if (SPECIAL[code]) {
         if (inRange) {
           counts[code] = (counts[code] || 0) + 1;
-          if (SPECIAL[code].credit && !hm[j]) credit += S.dutyMin;
+          if (SPECIAL[code].credit && !hm[j]) credit += dayStandardDuty;
         }
         continue;
       }
       if (j < a - 3 || j > b) continue;
       if (inRange) counts[code] = (counts[code] || 0) + 1;
-      for (const iv of shiftIvs(db.shifts, code)) blocks.push([j * 1440 + iv[0], j * 1440 + iv[1]]);
+      // اگر پرسنل اداری باشد، شیفت‌های عادی روزانه هم بر اساس ساعات اداری همان روز محاسبه می‌شوند مگر اینکه شیفت عصر/شب یا خاص باشد
+      const sh = (db.shifts || []).find((s) => s.code === code);
+      if (isOff && offPat && (code === 'OF' || code === 'M' || (sh && sh.isOffice))) {
+        const ivs = officePatternIvs(offPat, wd);
+        for (const iv of ivs) blocks.push([j * 1440 + iv[0], j * 1440 + iv[1]]);
+      } else {
+        for (const iv of shiftIvs(db.shifts, code)) blocks.push([j * 1440 + iv[0], j * 1440 + iv[1]]);
+      }
     }
     const factor = (S.factors && S.factors[p.contract]) != null ? S.factors[p.contract] : 1;
     let actual = 0, weighted = 0, holidayMins = 0;
@@ -250,9 +327,19 @@
       }
     }
     let holCount = 0;
-    for (let j = a; j <= b; j++) if (hm[j]) holCount++;
+    let duty = 0;
+    for (let j = a; j <= b; j++) {
+      if (hm[j]) {
+        holCount++;
+      } else if (isOff && offPat) {
+        const wd = weekdayOf(j);
+        duty += ivsMinutes(officePatternIvs(offPat, wd));
+      }
+    }
     const days = b - a + 1;
-    const duty = (days - holCount) * S.dutyMin;
+    if (!isOff || !offPat) {
+      duty = (days - holCount) * S.dutyMin;
+    }
     weighted = Math.round(weighted * 100) / 100;
     return { days, holCount, duty, actual, weighted, holidayMins, credit, overtime: weighted + credit - duty, counts };
   }
@@ -422,11 +509,48 @@
     return { changes, unfilled, summary: people.map((p) => ({ pid: p.id, load: Math.round(load[p.id]), target })), wishReport };
   }
 
+  /** پر کردن خودکار شیفت برای پرسنل اداری در یک بازه زمانی */
+  function autoAssignOffice(db, o) {
+    const people = (db.people || []).filter((p) => p.workType === 'office');
+    const S = db.settings;
+    const hm = holidayMap(S, db.holidays, o.a, o.b);
+    const assign = db.assign || {};
+    const officeShifts = (db.shifts || []).filter((s) => s.isOffice);
+    const defaultOffCode = officeShifts.length ? officeShifts[0].code : 'OF';
+    const changes = [];
+
+    for (const p of people) {
+      const offPat = findOfficePattern(db, p);
+      if (!offPat) continue;
+      const mine = assign[p.id] || {};
+      for (let j = o.a; j <= o.b; j++) {
+        // اگر قبلاً شیفت یا وضعیتی داشته باشد دست نمی‌زنیم
+        if (mine[j]) continue;
+        // اگر تعطیل رسمی یا جمعه باشد شیفت اداری ندارد
+        if (hm[j]) continue;
+        const wd = weekdayOf(j);
+        const dayCfg = officePatternDay(offPat, wd);
+        if (dayCfg && dayCfg.active) {
+          // انتخاب کد شیفت اختصاصی الگو یا کد پیش‌فرض اداری
+          let code = defaultOffCode;
+          if (offPat.shiftCode) code = offPat.shiftCode;
+          else {
+            const match = officeShifts.find((s) => s.officePattern && s.officePattern.id === offPat.id);
+            if (match) code = match.code;
+          }
+          changes.push({ pid: p.id, j, code });
+        }
+      }
+    }
+    return changes;
+  }
+
   const Core = {
     div, mod, g2d, d2g, j2d, d2j, isLeap, monthLen, weekdayOf, todayJdn,
     MONTHS, WD_SHORT, WD_FULL, FA, fa, toLatin, pad2, fmtHM, fmtHMlatin, fmtDate, fmtDateLatin, parseDate, toMin,
-    SPECIAL, CONTRACTS, defaultShifts, defaultHolidays, defaultSettings,
-    mergeIv, shiftIvs, ivsMinutes, shiftMinutes, ivText, holidayInfo, holidayMap, computeRange, restIssues, validateShift, suggestSchedule,
+    SPECIAL, CONTRACTS, WORK_TYPES, defaultOfficePatterns, defaultShifts, defaultHolidays, defaultSettings,
+    mergeIv, isOfficeShift, officePatternDay, officePatternIvs, findOfficePattern, autoAssignOffice,
+    shiftIvs, ivsMinutes, shiftMinutes, ivText, holidayInfo, holidayMap, computeRange, restIssues, validateShift, suggestSchedule,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = Core;
   else root.Core = Core;

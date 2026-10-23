@@ -1,9 +1,9 @@
 /* ui.js — رابط کاربری و ذخیره‌سازی شیفت‌یار */
 'use strict';
 const {
-  MONTHS, WD_SHORT, WD_FULL, SPECIAL, CONTRACTS, fa, toLatin, fmtHM, fmtHMlatin, fmtDate, fmtDateLatin, parseDate, toMin,
+  MONTHS, WD_SHORT, WD_FULL, SPECIAL, CONTRACTS, WORK_TYPES, fa, toLatin, fmtHM, fmtHMlatin, fmtDate, fmtDateLatin, parseDate, toMin,
   j2d, d2j, monthLen, weekdayOf, todayJdn, shiftIvs, shiftMinutes, ivsMinutes, ivText, holidayInfo, holidayMap,
-  computeRange, restIssues, validateShift, pad2,
+  computeRange, restIssues, validateShift, pad2, defaultOfficePatterns, findOfficePattern, autoAssignOffice, officePatternIvs,
 } = Core;
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -26,6 +26,7 @@ const canEdit = () => role() !== 'staff';
 const DB = { cfg: null, assign: {}, log: [] };
 const ui = {
   tab: 'sched', jy: 1405, jm: 1, dept: 'all', brush: 'M', pcalPerson: '', editPerson: null, shiftDraft: null,
+  shiftTab: 'hospital', editOfficePattern: null,
   rep: { from: null, to: null, dept: 'all' }, undo: [], ctx: null,
 };
 
@@ -403,7 +404,8 @@ function rowHtml(p, ctx) {
   const ot = r.overtime;
   const cap = DB.cfg.settings.otCapH * 60;
   const over = cap > 0 && ot > cap;
-  return `<tr data-pid="${p.id}"><th class="nm" scope="row" style="--dc:${esc(color)}"><b>${esc(pname(p))}</b><small>${esc(p.code || '')}${p.code ? ' · ' : ''}${CONTRACTS[p.contract] || ''}</small></th>${cells}
+  const wtTag = p.workType === 'office' ? ' · اداری' : '';
+  return `<tr data-pid="${p.id}"><th class="nm" scope="row" style="--dc:${esc(color)}"><b>${esc(pname(p))}</b><small>${esc(p.code || '')}${p.code ? ' · ' : ''}${CONTRACTS[p.contract] || ''}${wtTag}</small></th>${cells}
     <td class="sum">${hmH(r.duty)}</td><td class="sum">${hmH(r.weighted + r.credit)}</td>
     <td class="sum ot ${ot < 0 ? 'neg' : ot > 0 ? 'pos' : ''}"${over ? ' title="بیش از سقف اضافه‌کار"' : ''}>${hmH(ot)}${over ? ' ⚠' : ''}</td></tr>`;
 }
@@ -457,7 +459,7 @@ function viewSched() {
           <select id="copy-src"><option value="7">۷ روز قبل (هفتگی)</option><option value="14">۱۴ روز قبل</option><option value="28">۲۸ روز قبل</option><option value="pm">همان تاریخِ ماه قبل</option></select></label>
         <button class="btn" data-act="copypat" data-confirm="خانه‌های این ماه رونویسی می‌شوند. تأیید؟">اعمال</button>
         <span class="sp"></span>
-        ${canEdit() ? '<button class="btn" data-act="autoopen">پیشنهاد خودکار</button>' : ''}${exportBtns('sched')}
+        ${canEdit() ? '<button class="btn" data-act="autoassignoffice" title="پر کردن خودکار روزهای کاری اداری مطابق الگوی هر فرد">تکمیل خودکار اداری</button> <button class="btn" data-act="autoopen">پیشنهاد خودکار شیفت</button>' : ''}${exportBtns('sched')}
         <button class="btn danger" data-act="clearmonth" data-confirm="برنامهٔ این ماه پاک شود؟">پاک‌کردن ماه</button>
       </div>
       <div class="note">با قلم انتخاب‌شده روی خانه‌ها بکشید یا کلیک کنید. کلیک دوباره روی خانه‌ای با همان مقدار، آن را پاک می‌کند. ستون‌های قرمز تعطیل‌اند.</div>
@@ -523,6 +525,8 @@ function refreshPcal() { const el = $('#pcal-body'); if (el) el.innerHTML = pcal
 function viewPeople() {
   const e = person(ui.editPerson) || {};
   const ps = sortedPeople();
+  const patterns = (DB.cfg.settings && DB.cfg.settings.officePatterns) || defaultOfficePatterns();
+  const curWorkType = e.workType || 'rotating';
   const form = `<form class="panel" id="f-person" autocomplete="off">
     <h2>${e.id ? 'ویرایش پرسنل' : 'افزودن پرسنل'}</h2>
     <div class="formgrid">
@@ -530,6 +534,8 @@ function viewPeople() {
       <label class="f">نام خانوادگی<input type="text" name="last" required value="${esc(e.last)}"></label>
       <label class="f">کد پرسنلی<input type="text" name="code" dir="ltr" value="${esc(e.code)}"></label>
       <label class="f">شمارهٔ تماس<input type="tel" name="phone" dir="ltr" value="${esc(e.phone)}"></label>
+      <label class="f">نوع خدمت<select name="workType" id="p-work-type">${Object.keys(WORK_TYPES).map((k) => `<option value="${k}"${curWorkType === k ? ' selected' : ''}>${WORK_TYPES[k]}</option>`).join('')}</select></label>
+      <label class="f" id="f-off-pat" style="${curWorkType === 'office' ? '' : 'display:none'}">الگوی کاری اداری<select name="officePatternId">${patterns.map((pt) => `<option value="${esc(pt.id)}"${(e.officePatternId || patterns[0].id) === pt.id ? ' selected' : ''}>${esc(pt.name)}</option>`).join('')}</select></label>
       <label class="f">نوع قرارداد<select name="contract">${Object.keys(CONTRACTS).map((k) => `<option value="${k}"${(e.contract || 'company') === k ? ' selected' : ''}>${CONTRACTS[k]}</option>`).join('')}</select></label>
       <label class="f">بخش<select name="deptId"><option value="">بدون بخش</option>${DB.cfg.depts.map((d) => `<option value="${esc(d.id)}"${e.deptId === d.id ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select></label>
     </div>
@@ -537,9 +543,14 @@ function viewPeople() {
     ${DB.cfg.depts.length ? '' : '<div class="note">برای دسته‌بندی با رنگ، ابتدا از تب «بخش‌ها» بخش بسازید.</div>'}
   </form>`;
   const list = ps.length
-    ? `<div class="tw"><table class="t"><thead><tr><th>کد</th><th>نام</th><th>بخش</th><th>قرارداد</th><th>تماس</th><th></th></tr></thead><tbody>
-      ${ps.map((p) => `<tr><td>${esc(p.code || '—')}</td><td>${esc(pname(p))}</td><td>${dept(p.deptId) ? `<span class="dot" style="--dc:${esc(dept(p.deptId).color)}"></span>${esc(dept(p.deptId).name)}` : '—'}</td><td><span class="pill">${CONTRACTS[p.contract] || ''}</span></td><td dir="ltr" style="text-align:right">${esc(p.phone || '—')}</td>
-        <td><button class="btn sm" data-act="editperson" data-id="${p.id}">ویرایش</button> <button class="btn sm danger" data-act="delperson" data-id="${p.id}" data-confirm="حذف با برنامه‌هایش؟">حذف</button></td></tr>`).join('')}
+    ? `<div class="tw"><table class="t"><thead><tr><th>کد</th><th>نام</th><th>بخش</th><th>نوع خدمت</th><th>قرارداد</th><th>تماس</th><th></th></tr></thead><tbody>
+      ${ps.map((p) => {
+        const isOff = p.workType === 'office';
+        const pat = isOff ? (patterns.find((x) => x.id === p.officePatternId) || patterns[0]) : null;
+        const wtLabel = isOff ? `<span class="pill" style="background:#e0f2fe;color:#0369a1;border-color:#bae6fd" title="${esc(pat ? pat.name : '')}">اداری</span>` : '<span class="pill">در گردش</span>';
+        return `<tr><td>${esc(p.code || '—')}</td><td>${esc(pname(p))}</td><td>${dept(p.deptId) ? `<span class="dot" style="--dc:${esc(dept(p.deptId).color)}"></span>${esc(dept(p.deptId).name)}` : '—'}</td><td>${wtLabel}</td><td><span class="pill">${CONTRACTS[p.contract] || ''}</span></td><td dir="ltr" style="text-align:right">${esc(p.phone || '—')}</td>
+        <td><button class="btn sm" data-act="editperson" data-id="${p.id}">ویرایش</button> <button class="btn sm danger" data-act="delperson" data-id="${p.id}" data-confirm="حذف با برنامه‌هایش؟">حذف</button></td></tr>`;
+      }).join('')}
       </tbody></table></div>`
     : `<div class="panel empty"><b>پرسنلی ثبت نشده</b><span>فرم بالا را پر کنید.</span></div>`;
   return `<div class="split">${form}<div style="display:flex;flex-direction:column;gap:10px;min-width:0"><h2>${N(fa(ps.length))} نفر</h2>${list}</div></div>`;
@@ -564,6 +575,15 @@ function viewDepts() {
 
 /* ---------- تب: شیفت‌ها ---------- */
 function viewShifts() {
+  const isOffTab = ui.shiftTab === 'office';
+  const subnav = `<div class="bar" style="margin-bottom:12px;border-bottom:1px solid var(--bd);padding-bottom:8px">
+    <button class="btn${!isOffTab ? ' primary' : ''}" data-act="shifttab" data-sub="hospital">شیفت‌های بیمارستانی و در گردش</button>
+    <button class="btn${isOffTab ? ' primary' : ''}" data-act="shifttab" data-sub="office">الگوهای شیفت اداری</button>
+  </div>`;
+  return subnav + (isOffTab ? viewOfficePatterns() : viewHospitalShifts());
+}
+
+function viewHospitalShifts() {
   const sh = DB.cfg.shifts;
   const rows = sh.map((s) => {
     const ivs = shiftIvs(sh, s.code);
@@ -596,6 +616,60 @@ function viewShifts() {
       <div class="bar"><button class="btn primary" type="submit">ذخیره</button><button class="btn" type="button" data-act="cancelshift">انصراف</button></div></form>`;
   }
   return `<div class="tw"><table class="t"><thead><tr><th>کد</th><th>نام</th><th>نوع</th><th>بازه‌ها</th><th class="n">مدت</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>${editor}`;
+}
+
+function viewOfficePatterns() {
+  const patterns = (DB.cfg.settings && DB.cfg.settings.officePatterns) || defaultOfficePatterns();
+  const d = ui.editOfficePattern;
+  const listRows = patterns.map((p) => {
+    const summary = [0, 1, 2, 3, 4, 5, 6].map((wd) => {
+      const day = p.days[wd] || p.days[String(wd)];
+      if (!day || !day.active) return `${WD_SHORT[wd]}: تعطیل`;
+      return `${WD_SHORT[wd]}: ${day.s} تا ${day.e}`;
+    }).join(' | ');
+    return `<tr><td><b>${esc(p.name)}</b></td><td style="font-size:12px">${esc(summary)}</td>
+      <td><button class="btn sm" data-act="editoffpat" data-id="${esc(p.id)}">ویرایش</button> ${patterns.length > 1 ? `<button class="btn sm danger" data-act="deloffpat" data-id="${esc(p.id)}" data-confirm="حذف این الگوی اداری؟">حذف</button>` : ''}</td></tr>`;
+  }).join('');
+
+  let editor = `<div class="panel empty"><span>برای ساخت الگوی ساعات کاری اداری جدید:</span><button class="btn primary" data-act="newoffpat">الگوی اداری جدید</button></div>`;
+  if (d) {
+    const dayRows = [0, 1, 2, 3, 4, 5, 6].map((wd) => {
+      const cur = (d.days && (d.days[wd] || d.days[String(wd)])) || { active: wd !== 6, s: '07:30', e: '14:15' };
+      return `<tr data-wd="${wd}">
+        <td><b>${WD_FULL[wd]}</b></td>
+        <td><label class="chk" style="margin:0"><input type="checkbox" data-opd="${wd}:active"${cur.active ? ' checked' : ''}> روز کاری</label></td>
+        <td><input type="text" dir="ltr" size="6" data-opd="${wd}:s" value="${esc(cur.s)}" ${!cur.active ? 'disabled' : ''} inputmode="numeric"></td>
+        <td><input type="text" dir="ltr" size="6" data-opd="${wd}:e" value="${esc(cur.e)}" ${!cur.active ? 'disabled' : ''} inputmode="numeric"></td>
+      </tr>`;
+    }).join('');
+
+    editor = `<form class="panel" id="f-offpat" autocomplete="off">
+      <h2>${d.origId ? 'ویرایش الگوی اداری' : 'الگوی اداری جدید'}</h2>
+      <div class="formgrid">
+        <label class="f" style="grid-column:1/-1">نام الگو (مثلاً: پاییز و زمستان ۷ تا ۱۳، یا پیش‌فرض استاندارد)<input type="text" name="name" id="offpat-name" required value="${esc(d.name)}"></label>
+      </div>
+
+      <div class="panel" style="background:var(--surface2);padding:10px;border-radius:6px;gap:8px">
+        <div style="font-weight:600;font-size:13px">⚡ تنظیم سریع (اعمال به همه روزها):</div>
+        <div class="bar" style="flex-wrap:wrap;gap:8px">
+          <label class="rows"><span class="note">از ساعت:</span><input type="text" id="quick-off-s" dir="ltr" size="6" value="07:00" inputmode="numeric"></label>
+          <label class="rows"><span class="note">تا ساعت:</span><input type="text" id="quick-off-e" dir="ltr" size="6" value="13:00" inputmode="numeric"></label>
+          <button class="btn sm" type="button" data-act="applyquickall">اعمال به همه (شنبه تا پنجشنبه)</button>
+          <button class="btn sm" type="button" data-act="applyquick5d">اعمال به شنبه تا چهارشنبه (پنجشنبه تعطیل)</button>
+        </div>
+      </div>
+
+      <div class="tw" style="margin:10px 0">
+        <table class="t"><thead><tr><th>روز هفته</th><th>وضعیت</th><th>از ساعت</th><th>تا ساعت</th></tr></thead>
+        <tbody>${dayRows}</tbody></table>
+      </div>
+      <div class="note">می‌توانید ساعت هر روز هفته را مستقلاً تنظیم کنید یا با ابزار «تنظیم سریع» بالا با یک کلیک ساعت دلخواه را برای روزها پر کنید.</div>
+      <div id="f-offpat-msg"></div>
+      <div class="bar"><button class="btn primary" type="submit">ذخیرهٔ الگو</button><button class="btn" type="button" data-act="canceloffpat">انصراف</button></div>
+    </form>`;
+  }
+
+  return `<div class="tw"><table class="t"><thead><tr><th>نام الگو</th><th>برنامهٔ روزهای هفته</th><th></th></tr></thead><tbody>${listRows}</tbody></table></div>${editor}`;
 }
 function shiftDraftPreview() {
   const d = ui.shiftDraft, el = $('#sd-prev'); if (!d || !el) return;
@@ -660,13 +734,13 @@ function viewRep() {
   const days = R.to - R.from + 1;
   const tot = { duty: 0, actual: 0, weighted: 0, credit: 0, overtime: 0 };
   R.rows.forEach((x) => { for (const k in tot) tot[k] += x.r[k]; });
-  const head = `<th>کد</th><th>نام</th><th>بخش</th><th>قرارداد</th><th class="n">موظفی</th><th class="n">کارکرد واقعی</th><th class="n">با ضریب</th><th class="n">اعتبار مرخصی</th><th class="n">اضافه / کسر</th>
+  const head = `<th>کد</th><th>نام</th><th>بخش</th><th>نوع خدمت</th><th>قرارداد</th><th class="n">موظفی</th><th class="n">کارکرد واقعی</th><th class="n">با ضریب</th><th class="n">اعتبار مرخصی</th><th class="n">اضافه / کسر</th>
     ${R.shiftCols.map((c) => `<th class="n">${esc(c)}</th>`).join('')}${R.spCols.map((c) => `<th class="n">${SPECIAL[c].name}</th>`).join('')}`;
-  const body = R.rows.map(({ p, r }) => `<tr><td>${esc(p.code || '—')}</td><td>${esc(pname(p))}</td><td>${dept(p.deptId) ? `<span class="dot" style="--dc:${esc(dept(p.deptId).color)}"></span>${esc(dept(p.deptId).name)}` : '—'}</td><td>${CONTRACTS[p.contract] || ''}</td>
+  const body = R.rows.map(({ p, r }) => `<tr><td>${esc(p.code || '—')}</td><td>${esc(pname(p))}</td><td>${dept(p.deptId) ? `<span class="dot" style="--dc:${esc(dept(p.deptId).color)}"></span>${esc(dept(p.deptId).name)}` : '—'}</td><td>${p.workType === 'office' ? '<span class="pill" style="background:#e0f2fe;color:#0369a1;border-color:#bae6fd">اداری</span>' : '<span class="pill">در گردش</span>'}</td><td>${CONTRACTS[p.contract] || ''}</td>
     <td class="n">${hmH(r.duty)}</td><td class="n">${hmH(r.actual)}</td><td class="n">${hmH(r.weighted)}</td><td class="n">${hmH(r.credit)}</td>
     <td class="n" style="${r.overtime < 0 ? 'color:var(--hol-ink)' : cap > 0 && r.overtime > cap ? 'color:var(--warn);font-weight:700' : ''}">${hmH(r.overtime)}</td>
     ${R.shiftCols.map((c) => `<td class="n">${r.counts[c] ? fa(r.counts[c]) : '·'}</td>`).join('')}${R.spCols.map((c) => `<td class="n">${r.counts[c] ? fa(r.counts[c]) : '·'}</td>`).join('')}</tr>`).join('');
-  const foot = `<tr><td colspan="4">جمع</td><td class="n">${hmH(tot.duty)}</td><td class="n">${hmH(tot.actual)}</td><td class="n">${hmH(tot.weighted)}</td><td class="n">${hmH(tot.credit)}</td><td class="n">${hmH(tot.overtime)}</td><td colspan="${R.shiftCols.length + R.spCols.length}"></td></tr>`;
+  const foot = `<tr><td colspan="5">جمع</td><td class="n">${hmH(tot.duty)}</td><td class="n">${hmH(tot.actual)}</td><td class="n">${hmH(tot.weighted)}</td><td class="n">${hmH(tot.credit)}</td><td class="n">${hmH(tot.overtime)}</td><td colspan="${R.shiftCols.length + R.spCols.length}"></td></tr>`;
   // جمع‌بندی بخش‌ها
   const groups = {};
   R.rows.forEach(({ p, r }) => {
@@ -753,11 +827,25 @@ function xlsxRoster() {
   return { name: `roster-${ui.jy}-${String(ui.jm).padStart(2, '0')}.xlsx`, data: Exporter.xlsx([sheet]) };
 }
 /** چاپ همان نمای روی صفحه؛ در پنجرهٔ چاپ مرورگر گزینهٔ «ذخیره به‌صورت PDF» را انتخاب کنید */
-function printView(title, sub, sourceEls) {
+function printView(title, sub, sourceEls, isRoster) {
   const old = $('#printarea'); if (old) old.remove();
   const box = document.createElement('div'); box.id = 'printarea';
   box.innerHTML = `<h1>${esc(title)}</h1><div class="psub">${sub}</div>`;
-  for (const el of sourceEls) box.appendChild(el.cloneNode(true));
+  for (const el of sourceEls) {
+    const clone = el.cloneNode(true);
+    // حذف قطعی عناصر اضافی (کد، قرارداد، اداری و...) از ساختار DOM در حالت چاپ
+    clone.querySelectorAll('th.nm small').forEach((sm) => sm.remove());
+    if (isRoster) {
+      // در جدول تقویم، ستون‌های محاسباتی (موظفی، کارکرد، اضافه/کسر) چاپ نمی‌شوند
+      clone.querySelectorAll('.sum').forEach((td) => td.remove());
+      // اصلاح colspan ردیف بخش‌ها متناسب با حذف ۳ ستون محاسباتی
+      clone.querySelectorAll('tr.grp td').forEach((td) => {
+        const c = parseInt(td.getAttribute('colspan'), 10);
+        if (c > 3) td.setAttribute('colspan', String(c - 3));
+      });
+    }
+    box.appendChild(clone);
+  }
   document.body.appendChild(box);
   document.body.classList.add('printing');
   const done = () => { document.body.classList.remove('printing'); box.remove(); window.removeEventListener('afterprint', done); };
@@ -1285,6 +1373,74 @@ document.addEventListener('click', async (e) => {
       if (ui.dept === id) ui.dept = 'all';
       Store.touchCfg(); logEv(`حذف بخش: ${d ? d.name : ''}`); return render();
     }
+    /* الگوهای شیفت اداری و زیرتب‌ها */
+    case 'shifttab': ui.shiftTab = t.dataset.sub; ui.shiftDraft = null; ui.editOfficePattern = null; return render();
+    case 'newoffpat': {
+      ui.editOfficePattern = {
+        origId: null,
+        name: '',
+        days: {
+          0: { active: true, s: '07:30', e: '14:15' },
+          1: { active: true, s: '07:30', e: '14:15' },
+          2: { active: true, s: '07:30', e: '14:15' },
+          3: { active: true, s: '07:30', e: '14:15' },
+          4: { active: true, s: '07:30', e: '14:15' },
+          5: { active: true, s: '07:30', e: '13:20' },
+          6: { active: false, s: '07:30', e: '14:15' },
+        },
+      };
+      return render();
+    }
+    case 'editoffpat': {
+      const patterns = (cfg.settings && cfg.settings.officePatterns) || defaultOfficePatterns();
+      const p = patterns.find((x) => x.id === id);
+      if (p) ui.editOfficePattern = JSON.parse(JSON.stringify(Object.assign({}, p, { origId: p.id })));
+      return render();
+    }
+    case 'canceloffpat': ui.editOfficePattern = null; return render();
+    case 'deloffpat': {
+      const patterns = (cfg.settings && cfg.settings.officePatterns) || defaultOfficePatterns();
+      if (patterns.length <= 1) return flash('حداقل یک الگوی اداری باید در سیستم باقی بماند.', false);
+      const inUse = cfg.people.filter((p) => p.workType === 'office' && p.officePatternId === id);
+      if (inUse.length) return flash(`این الگو برای ${fa(inUse.length)} نفر از پرسنل اداری تنظیم شده و ابتدا باید الگوی آن‌ها را تغییر دهید.`, false);
+      cfg.settings.officePatterns = patterns.filter((x) => x.id !== id);
+      Store.touchCfg(); logEv(`حذف الگوی اداری`); return render();
+    }
+    case 'applyquickall': {
+      const d = ui.editOfficePattern;
+      if (!d || !d.days) return;
+      const sVal = toLatin($('#quick-off-s').value).trim() || '07:00';
+      const eVal = toLatin($('#quick-off-e').value).trim() || '13:00';
+      const nameIn = $('#offpat-name'); if (nameIn && nameIn.value) d.name = nameIn.value;
+      for (let wd = 0; wd <= 5; wd++) {
+        d.days[wd] = { active: true, s: sVal, e: eVal };
+      }
+      d.days[6] = { active: false, s: sVal, e: eVal }; // جمعه
+      return render();
+    }
+    case 'applyquick5d': {
+      const d = ui.editOfficePattern;
+      if (!d || !d.days) return;
+      const sVal = toLatin($('#quick-off-s').value).trim() || '07:30';
+      const eVal = toLatin($('#quick-off-e').value).trim() || '14:15';
+      const nameIn = $('#offpat-name'); if (nameIn && nameIn.value) d.name = nameIn.value;
+      for (let wd = 0; wd <= 4; wd++) {
+        d.days[wd] = { active: true, s: sVal, e: eVal };
+      }
+      d.days[5] = { active: false, s: sVal, e: eVal }; // پنجشنبه تعطیل
+      d.days[6] = { active: false, s: sVal, e: eVal }; // جمعه تعطیل
+      return render();
+    }
+    case 'autoassignoffice': {
+      const m = monthInfo();
+      const changes = Core.autoAssignOffice(dbv(), { a: m.a, b: m.b });
+      if (!changes.length) return flash('خانه‌ای برای پر شدن اداری وجود ندارد (یا قبلاً پر شده‌اند یا پرسنل اداری تعریف نشده است).', false);
+      const st = [];
+      for (const ch of changes) setAssign(ch.pid, ch.j, ch.code, st);
+      finishStroke(st, 'تکمیل خودکار اداری');
+      flash(`${fa(st.length)} خانه اداری برای پرسنل اداری تکمیل شد.`, true);
+      return render();
+    }
     /* شیفت‌ها */
     case 'newshift': ui.shiftDraft = { orig: null, code: '', name: '', kind: 'simple', segs: [{ o: 0, s: '08:00', e: '14:00' }], refs: [] }; return render();
     case 'editshift': { const s = shiftOf(id); ui.shiftDraft = JSON.parse(JSON.stringify(Object.assign({ segs: [], refs: [] }, s, { orig: s.code }))); if (!ui.shiftDraft.segs.length && s.kind !== 'combo') ui.shiftDraft.segs.push({ o: 0, s: '08:00', e: '14:00' }); return render(); }
@@ -1318,7 +1474,7 @@ document.addEventListener('click', async (e) => {
     case 'repprint': { const R = buildReport(); printView('گزارش کارکرد پرسنل', `${N(fmtDate(R.from))} تا ${N(fmtDate(R.to))}`, $$('#main .tw')); return; }
     case 'schedprint': {
       const d = ui.dept === 'all' ? 'همهٔ بخش‌ها' : ui.dept === 'none' ? 'بدون بخش' : (dept(ui.dept) || {}).name || '';
-      printView(`برنامهٔ شیفت ${MONTHS[ui.jm - 1]} ${fa(ui.jy)}`, esc(d), $$('#main .rwrap, #main .legend')); return;
+      printView(`برنامهٔ شیفت ${MONTHS[ui.jm - 1]} ${fa(ui.jy)}`, esc(d), $$('#main .rwrap, #main .legend'), true); return;
     }
     case 'autoopen': autoState.open = true; autoState.result = null; autoState.msg = ''; return render();
     case 'autoclose': autoState.open = false; autoState.result = null; return render();
@@ -1397,12 +1553,36 @@ document.addEventListener('submit', (e) => {
   e.preventDefault();
   const f = e.target, fd = new FormData(f), cfg = DB.cfg;
   if (f.id === 'f-person') {
-    const rec = { first: (fd.get('first') || '').trim(), last: (fd.get('last') || '').trim(), code: toLatin((fd.get('code') || '').trim()), phone: toLatin((fd.get('phone') || '').trim()), contract: fd.get('contract'), deptId: fd.get('deptId') || '' };
+    const rec = {
+      first: (fd.get('first') || '').trim(),
+      last: (fd.get('last') || '').trim(),
+      code: toLatin((fd.get('code') || '').trim()),
+      phone: toLatin((fd.get('phone') || '').trim()),
+      contract: fd.get('contract'),
+      deptId: fd.get('deptId') || '',
+      workType: fd.get('workType') || 'rotating',
+      officePatternId: fd.get('officePatternId') || '',
+    };
     if (!rec.first && !rec.last) return flash('نام را بنویسید.', false, '#f-person-msg');
     if (rec.code && cfg.people.some((p) => p.code === rec.code && p.id !== ui.editPerson)) return flash('این کد پرسنلی قبلاً ثبت شده است.', false, '#f-person-msg');
     if (ui.editPerson) { Object.assign(person(ui.editPerson), rec); logEv('ویرایش پرسنل: ' + pname(rec)); }
     else { cfg.people.push(Object.assign({ id: uid('p') }, rec)); logEv('افزودن پرسنل: ' + pname(rec)); }
     ui.editPerson = null; Store.touchCfg(); render();
+  } else if (f.id === 'f-offpat') {
+    const d = ui.editOfficePattern;
+    const name = (fd.get('name') || '').trim();
+    if (!name) return flash('نام الگو را بنویسید.', false, '#f-offpat-msg');
+    if (!cfg.settings.officePatterns) cfg.settings.officePatterns = defaultOfficePatterns();
+    const patId = d.origId || uid('pat');
+    const rec = { id: patId, name, days: JSON.parse(JSON.stringify(d.days)) };
+    if (d.origId) {
+      const idx = cfg.settings.officePatterns.findIndex((x) => x.id === d.origId);
+      if (idx !== -1) cfg.settings.officePatterns[idx] = rec;
+      else cfg.settings.officePatterns.push(rec);
+    } else {
+      cfg.settings.officePatterns.push(rec);
+    }
+    ui.editOfficePattern = null; Store.touchCfg(); logEv('ذخیرهٔ الگوی اداری: ' + name); render();
   } else if (f.id === 'f-dept') {
     const name = (fd.get('name') || '').trim(); if (!name) return;
     cfg.depts.push({ id: uid('d'), name, color: fd.get('color') }); Store.touchCfg(); logEv('افزودن بخش: ' + name); render();
@@ -1426,8 +1606,33 @@ document.addEventListener('submit', (e) => {
 document.addEventListener('change', async (e) => {
   const t = e.target, cfg = DB.cfg;
   if (t.id === 'f-dept') { ui.dept = t.value; return render(); }
+  if (t.id === 'p-work-type') {
+    const patWrap = $('#f-off-pat');
+    if (patWrap) patWrap.style.display = t.value === 'office' ? '' : 'none';
+    return;
+  }
   if (t.id === 'pf-person') { prefsState.pid = t.value; return render(); }
   if (t.id === 'pcal-person') { ui.pcalPerson = t.value; return refreshPcal(); }
+  if (t.dataset.opd) {
+    const [wd, field] = t.dataset.opd.split(':');
+    const d = ui.editOfficePattern;
+    if (d && d.days) {
+      if (!d.days[wd]) d.days[wd] = { active: true, s: '07:30', e: '14:15' };
+      if (field === 'active') {
+        d.days[wd].active = t.checked;
+        const row = $(`tr[data-wd="${wd}"]`);
+        if (row) {
+          const sIn = row.querySelector(`[data-opd="${wd}:s"]`);
+          const eIn = row.querySelector(`[data-opd="${wd}:e"]`);
+          if (sIn) sIn.disabled = !t.checked;
+          if (eIn) eIn.disabled = !t.checked;
+        }
+      } else {
+        d.days[wd][field] = toLatin(t.value).trim();
+      }
+    }
+    return;
+  }
   if (t.dataset.dcolor) { const d = dept(t.dataset.dcolor); if (d) { d.color = t.value; Store.touchCfg(); } return; }
   if (t.dataset.dname) { const d = dept(t.dataset.dname); if (d && t.value.trim()) { d.name = t.value.trim(); Store.touchCfg(); } return; }
   if (t.dataset.set) {

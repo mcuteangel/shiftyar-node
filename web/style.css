@@ -215,16 +215,105 @@ table.roster { width: 100%; }
 #dp .dpf { display: flex; justify-content: space-between; margin-top: 8px; }
 #printarea { display: none; }
 @media print {
-  @page { size: A4 landscape; margin: 10mm; }
+  @page { size: A4 landscape; margin: 4mm 5mm; }
+  *, *::before, *::after { box-sizing: border-box !important; }
   body.printing > *:not(#printarea) { display: none !important; }
-  body.printing #printarea { display: block; color: #000; background: #fff; }
-  body.printing { background: #fff !important; }
-  #printarea h1 { font-size: 18px; margin: 0 0 2px; }
-  #printarea .psub { font-size: 12px; margin-bottom: 8px; color: #444; }
-  #printarea, #printarea * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  #printarea .rwrap, #printarea .tw { overflow: visible !important; max-height: none !important; }
-  #printarea table { width: 100%; font-size: 9px; border-collapse: collapse; }
-  #printarea th, #printarea td { position: static !important; border: 1px solid #aaa; padding: 2px 3px; }
+  body.printing #printarea { display: block !important; color: #000 !important; background: #fff !important; width: 100% !important; max-width: 100% !important; }
+  body.printing { background: #fff !important; margin: 0 !important; padding: 0 !important; }
+  #printarea h1 { font-size: 13px !important; margin: 0 0 2px !important; text-align: center !important; }
+  #printarea .psub { font-size: 10px !important; margin-bottom: 4px !important; color: #444 !important; text-align: center !important; }
+  #printarea, #printarea * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  #printarea .rwrap, #printarea .tw { overflow: visible !important; max-height: none !important; border: 0 !important; width: 100% !important; margin: 0 !important; padding: 0 !important; }
+  
+  /* جدول تقویم در حالت چاپ */
+  #printarea table.roster {
+    width: 100% !important;
+    max-width: 100% !important;
+    table-layout: fixed !important;
+    font-size: 8px !important;
+    border-collapse: collapse !important;
+    margin: 0 !important;
+  }
+  #printarea table.roster th, #printarea table.roster td {
+    position: static !important;
+    border: 1px solid #777 !important;
+    padding: 1px 0 !important;
+    height: 18px !important;
+    text-align: center !important;
+    min-width: 0 !important;
+  }
+  #printarea table.roster thead th {
+    height: 22px !important;
+    font-size: 7.5px !important;
+    background: #f0f0f0 !important;
+    line-height: 1.1 !important;
+  }
+  #printarea table.roster thead th small { font-size: 6.5px !important; }
+  
+  /* ستون نام پرسنل: فقط نام و فامیل بدون کد پرسنلی، قرارداد و نوع خدمت */
+  #printarea table.roster .nm {
+    width: 120px !important;
+    min-width: 120px !important;
+    max-width: 120px !important;
+    text-align: right !important;
+    padding: 1px 5px !important;
+    border-right: 3px solid #555 !important;
+  }
+  #printarea table.roster .nm b {
+    font-size: 10px !important;
+    font-weight: 700 !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    line-height: 1.2 !important;
+  }
+  #printarea table.roster .nm small {
+    display: none !important; /* پنهان کردن کد پرسنلی، نوع قرارداد و برچسب اداری در چاپ */
+  }
+
+  /* خانه‌های روزها */
+  #printarea table.roster td.cell {
+    width: auto !important;
+    min-width: 0 !important;
+    height: 20px !important;
+    padding: 0 !important;
+  }
+  #printarea table.roster .c {
+    width: 18px !important;
+    height: 18px !important;
+    font-size: 9px !important;
+    border-radius: 3px !important;
+    margin: auto !important;
+    line-height: 1 !important;
+  }
+
+  /* ستون‌های محاسباتی در خروجی برنامه تقویم کاملاً حذف می‌شوند */
+  #printarea table.roster td.sum, #printarea table.roster thead th.sum {
+    display: none !important;
+  }
+
+  /* سطرهای دسته‌بندی بخش */
+  #printarea table.roster tr.grp td {
+    font-size: 8.5px !important;
+    font-weight: 700 !important;
+    padding: 1px 6px !important;
+    background: #e5e7eb !important;
+    height: 18px !important;
+    text-align: right !important;
+    box-sizing: border-box !important;
+    border: 1px solid #777 !important;
+    border-right: 4px solid var(--dc, #555) !important;
+  }
+
   #printarea tr { break-inside: avoid; }
-  #printarea .legend { font-size: 10px; margin-top: 8px; }
+  #printarea .legend {
+    font-size: 7.5px !important;
+    margin-top: 4px !important;
+    gap: 2px 8px !important;
+  }
+  #printarea .legend .c {
+    width: 15px !important;
+    height: 14px !important;
+    font-size: 7.5px !important;
+  }
 }

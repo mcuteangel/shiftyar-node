@@ -208,4 +208,52 @@ t('پیشنهاد خودکار هوشمند: درخواست روز، آف، تر
   assert.strictEqual(r2.wishReport[0].ok, false);
 });
 
+t('پرسنل اداری: محاسبه موظفی پویا و انتساب خودکار شیفت اداری', () => {
+  // پاییز و زمستان: شنبه تا پنجشنبه ۶ روز در هفته ۷ تا ۱۳ (۳۶۰ دقیقه در هر روز کاری)
+  const pattern6d = {
+    id: 'pat6d',
+    name: '۶ روز در هفته ۷ تا ۱۳',
+    days: {
+      0: { active: true, s: '07:00', e: '13:00' },
+      1: { active: true, s: '07:00', e: '13:00' },
+      2: { active: true, s: '07:00', e: '13:00' },
+      3: { active: true, s: '07:00', e: '13:00' },
+      4: { active: true, s: '07:00', e: '13:00' },
+      5: { active: true, s: '07:00', e: '13:00' },
+      6: { active: false, s: '07:00', e: '13:00' },
+    },
+  };
+  const settings = Object.assign({}, C.defaultSettings(), { officePatterns: [pattern6d] });
+  const offShift = { code: 'OF', name: 'اداری', isOffice: true, kind: 'simple', segs: [{ o: 0, s: '07:00', e: '13:00' }] };
+  const shifts = C.defaultShifts().concat([offShift]);
+  const p = { id: 'p_off', first: 'کارمند', last: 'اداری', contract: 'official', workType: 'office', officePatternId: 'pat6d' };
+  const people = [p];
+  const a = C.j2d(1405, 7, 1), b = a + 29; // مهر ۱۴۰۵: ۳۰ روز، ۴ جمعه
+  // روزهای غیر جمعه: ۲۶ روز کاری. هر روز ۳۶۰ دقیقه → موظفی = ۲۶ * ۳۶۰ = ۹۳۶۰ دقیقه (۱۵۶ ساعت)
+  const db = { settings, shifts, holidays: C.defaultHolidays(), people, assign: {} };
+  
+  // ۱. انتساب خودکار
+  const autoChanges = C.autoAssignOffice(db, { a, b });
+  assert.strictEqual(autoChanges.length, 26);
+  assert.ok(autoChanges.every((ch) => ch.pid === 'p_off' && ch.code === 'OF'));
+
+  // اعمال تغییرات در assign
+  db.assign[p.id] = {};
+  for (const ch of autoChanges) db.assign[p.id][ch.j] = ch.code;
+
+  // ۲. محاسبه بازه و موظفی
+  const r = C.computeRange(db, p, a, b);
+  assert.strictEqual(r.duty, 26 * 360);
+  assert.strictEqual(r.actual, 26 * 360);
+  assert.strictEqual(r.overtime, 0);
+
+  // ۳. اگر روز شنبه مرخصی استحقاقی بگیرد، اعتبار معادل ساعت اداری همان روز (۳۶۰ دقیقه) است
+  db.assign[p.id][a] = 'LV';
+  const r2 = C.computeRange(db, p, a, b);
+  assert.strictEqual(r2.duty, 26 * 360);
+  assert.strictEqual(r2.actual, 25 * 360);
+  assert.strictEqual(r2.credit, 360);
+  assert.strictEqual(r2.overtime, 0);
+});
+
 console.log(results.join('\n'));

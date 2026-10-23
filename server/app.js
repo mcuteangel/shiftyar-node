@@ -152,8 +152,8 @@ function createApp(opts = {}) {
   function loadConfig(user) {
     const sc = scope(user);
     let depts = q('SELECT id, name, color FROM depts ORDER BY pos, name').all().map((d) => ({ id: d.id, name: d.name, color: d.color }));
-    let people = q('SELECT id, first, last, code, phone, contract, dept_id FROM people ORDER BY pos, last, first').all()
-      .map((p) => ({ id: p.id, first: p.first, last: p.last, code: p.code, phone: p.phone, contract: p.contract, deptId: p.dept_id || '' }));
+    let people = q('SELECT id, first, last, code, phone, contract, dept_id, work_type, office_pattern_id FROM people ORDER BY pos, last, first').all()
+      .map((p) => ({ id: p.id, first: p.first, last: p.last, code: p.code, phone: p.phone, contract: p.contract, deptId: p.dept_id || '', workType: p.work_type || 'rotating', officePatternId: p.office_pattern_id || '' }));
     if (user.role !== 'admin') {
       people = people.filter((p) => sc.read.has(p.id));
       const keep = new Set(people.map((p) => p.deptId).filter(Boolean));
@@ -198,7 +198,9 @@ function createApp(opts = {}) {
       if (!Core.CONTRACTS[p.contract]) throw bad('نوع قرارداد نامعتبر است.');
       const deptId = p.deptId || '';
       if (deptId && !deptIds.has(deptId)) throw bad('بخش انتخاب‌شده وجود ندارد.');
-      return { id: p.id, first, last, code, phone: toLatin(str(p.phone, 30, 'شمارهٔ تماس')), contract: p.contract, deptId };
+      const workType = p.workType === 'office' ? 'office' : 'rotating';
+      const officePatternId = str(p.officePatternId, 40, 'الگوی اداری') || '';
+      return { id: p.id, first, last, code, phone: toLatin(str(p.phone, 30, 'شمارهٔ تماس')), contract: p.contract, deptId, workType, officePatternId };
     });
     // شیفت‌ها
     if (!Array.isArray(c.shifts) || !c.shifts.length || c.shifts.length > 60) throw bad('فهرست شیفت‌ها نامعتبر است.');
@@ -227,7 +229,7 @@ function createApp(opts = {}) {
         };
       }
       if (draft.segs.length > 6) throw bad('تعداد بازه‌ها بیش از حد است.');
-      return {
+      const res = {
         code: draft.code, name: draft.name, kind: 'simple',
         segs: draft.segs.map((g) => {
           if (g.o !== 0 && g.o !== 1) throw bad('روز نسبی نامعتبر است.');
@@ -235,6 +237,9 @@ function createApp(opts = {}) {
           return { o: g.o, s: pad(g.s), e: pad(g.e) };
         }),
       };
+      if (draft.isOffice) res.isOffice = true;
+      if (draft.officePattern) res.officePattern = draft.officePattern;
+      return res;
     });
     // تعطیلات
     if (!Array.isArray(c.holidays) || c.holidays.length > 500) throw bad('فهرست تعطیلات نامعتبر است.');
@@ -258,6 +263,7 @@ function createApp(opts = {}) {
       },
       minRestH: num(S.minRestH, 0, 48, 'حداقل استراحت'),
       otCapH: num(S.otCapH, 0, 500, 'سقف اضافه‌کار'),
+      officePatterns: Array.isArray(S.officePatterns) ? S.officePatterns : Core.defaultOfficePatterns(),
     };
     return out;
   }
@@ -278,8 +284,8 @@ function createApp(opts = {}) {
       const newIds = new Set(c.people.map((p) => p.id));
       for (const [id] of existing) if (!newIds.has(id)) q('DELETE FROM people WHERE id = ?').run(id);
       q("UPDATE people SET code = ''").run();
-      const pIns = q('INSERT INTO people(id, first, last, code, phone, contract, dept_id, pos) VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET first = excluded.first, last = excluded.last, code = excluded.code, phone = excluded.phone, contract = excluded.contract, dept_id = excluded.dept_id, pos = excluded.pos');
-      c.people.forEach((p, i) => pIns.run(p.id, p.first, p.last, p.code, p.phone, p.contract, p.deptId || null, i));
+      const pIns = q('INSERT INTO people(id, first, last, code, phone, contract, dept_id, work_type, office_pattern_id, pos) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET first = excluded.first, last = excluded.last, code = excluded.code, phone = excluded.phone, contract = excluded.contract, dept_id = excluded.dept_id, work_type = excluded.work_type, office_pattern_id = excluded.office_pattern_id, pos = excluded.pos');
+      c.people.forEach((p, i) => pIns.run(p.id, p.first, p.last, p.code, p.phone, p.contract, p.deptId || null, p.workType || 'rotating', p.officePatternId || null, i));
       const keepD = new Set(c.depts.map((d) => d.id));
       for (const r of q('SELECT id FROM depts').all()) if (!keepD.has(r.id)) q('DELETE FROM depts WHERE id = ?').run(r.id);
       // شیفت‌ها و تعطیلات

@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS depts (
 CREATE TABLE IF NOT EXISTS people (
   id TEXT PRIMARY KEY, first TEXT NOT NULL DEFAULT '', last TEXT NOT NULL DEFAULT '', code TEXT NOT NULL DEFAULT '',
   phone TEXT NOT NULL DEFAULT '', contract TEXT NOT NULL, dept_id TEXT REFERENCES depts(id) ON DELETE SET NULL,
+  work_type TEXT NOT NULL DEFAULT 'rotating', office_pattern_id TEXT,
   pos INTEGER NOT NULL DEFAULT 0);
 CREATE UNIQUE INDEX IF NOT EXISTS people_code ON people(code) WHERE code <> '';
 CREATE INDEX IF NOT EXISTS people_dept ON people(dept_id);
@@ -60,6 +61,12 @@ function open(file) {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA synchronous = NORMAL;');
   db.exec(SCHEMA);
+  // Migration for work_type and office_pattern_id columns in existing people table
+  try {
+    const cols = db.prepare('PRAGMA table_info(people)').all().map((r) => r.name);
+    if (!cols.includes('work_type')) db.exec("ALTER TABLE people ADD COLUMN work_type TEXT NOT NULL DEFAULT 'rotating'");
+    if (!cols.includes('office_pattern_id')) db.exec('ALTER TABLE people ADD COLUMN office_pattern_id TEXT');
+  } catch (_) { /* ignore */ }
   seed(db);
   return db;
 }
