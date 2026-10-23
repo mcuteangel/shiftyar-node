@@ -73,6 +73,8 @@ It features zero external npm dependencies, running natively on Node.js 22.13+ u
 
 3. **Frontend Bundle Synchronization:**
    - Any modification to files in `web/` (`core.js`, `ui.js`, `style.css`, `export.js`) **must** be followed by running `python build.py` to regenerate the single-file distribution bundle `shiftyar.html`.
+   - The regenerated `shiftyar.html` **must** be committed in the same PR as the `web/` change. A PR that changes `web/` without the matching bundle update is incomplete and must not be merged — changes are only considered covered when the single-file bundle reflects them too.
+   - `shiftyar.html` is the public demo: on every merge to `main`, the `Deploy demo to GitHub Pages` workflow (`.github/workflows/pages.yml`) rebuilds it from `web/` and publishes it to GitHub Pages, where it runs standalone in local (browser-only) mode. Changes to `web/` must keep the single-file demo working without the server — no server-only assumptions in the frontend.
 
 4. **Security & RBAC Enforcement:**
    - All state-mutating HTTP requests require:
