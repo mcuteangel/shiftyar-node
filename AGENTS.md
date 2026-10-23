@@ -91,14 +91,16 @@ It features zero external npm dependencies, running natively on Node.js 22.13+ u
      - Calculation summary columns (`.sum`) are omitted in calendar printing.
      - Colspan for department headers (`tr.grp td`) must match the actual printed column count.
 
-6. **Git Workflow: Branching, Commit, and PR Requirements:**
-   - **Never push directly to `main`**: The `main` branch is strictly protected (including for admins). All changes must go through a dedicated feature or fix branch and be merged exclusively via a **Pull Request (PR)**.
+6. **Git Workflow: Branching, PRs, and Mandatory Review Queue:**
+   - **Never push directly to `main`**: The `main` branch is strictly protected (including for admins).
+   - **Mandatory Review Queue**: Pull Requests **must never be auto-merged or merged immediately**. All PRs must remain in the review queue awaiting human inspection and approval (`required_approving_review_count >= 1`).
    - For any new task:
      1. Create and switch to a descriptive branch (e.g. `git checkout -b feat/office-shifts` or `git checkout -b fix/time-direction`).
      2. Implement changes, run tests, and regenerate `shiftyar.html` with `python build.py`.
      3. Commit changes with a conventional commit message (e.g. `git commit -m "feat(scope): description"`).
      4. Push the branch to remote: `git push -u origin <branch-name>`.
-     5. Open a Pull Request using `gh pr create --base main --head <branch-name> --title "..." --body "..."` (and merge via `gh pr merge --merge` or web interface).
+     5. Open a Pull Request using `gh pr create --base main --head <branch-name> --title "..." --body "..."`.
+     6. **Stop and wait**: Leave the PR in the review queue for the project owner to review, test, and merge. Never run `gh pr merge` autonomously.
 
 ---
 
