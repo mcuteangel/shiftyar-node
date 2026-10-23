@@ -601,7 +601,7 @@ function viewHospitalShifts() {
   const sh = DB.cfg.shifts;
   const rows = sh.map((s) => {
     const ivs = shiftIvs(sh, s.code);
-    return `<tr><td><b>${esc(s.code)}</b></td><td>${esc(s.name)}</td><td>${s.kind === 'combo' ? 'ترکیبی' : 'ساده'}</td><td>${N(ivText(ivs))}</td><td class="n">${hmH(ivsMinutes(ivs))}</td>
+    return `<tr><td><b>${esc(s.code)}</b></td><td>${esc(s.name)}</td><td>${s.kind === 'combo' ? 'ترکیبی' : 'ساده'}</td><td dir="rtl">${ivText(ivs)}</td><td class="n">${hmH(ivsMinutes(ivs))}</td>
       <td><button class="btn sm" data-act="editshift" data-id="${esc(s.code)}">ویرایش</button> <button class="btn sm danger" data-act="delshift" data-id="${esc(s.code)}" data-confirm="حذف شیفت؟">حذف</button></td></tr>`;
   }).join('');
   const d = ui.shiftDraft;
@@ -639,9 +639,9 @@ function viewOfficePatterns() {
     const summary = [0, 1, 2, 3, 4, 5, 6].map((wd) => {
       const day = p.days[wd] || p.days[String(wd)];
       if (!day || !day.active) return `${WD_SHORT[wd]}: تعطیل`;
-      return `${WD_SHORT[wd]}: ${day.s} تا ${day.e}`;
+      return `${WD_SHORT[wd]}: \u202B${fa(day.s)} تا ${fa(day.e)}\u202C`;
     }).join(' | ');
-    return `<tr><td><b>${esc(p.name)}</b></td><td style="font-size:12px">${esc(summary)}</td>
+    return `<tr><td><b>${esc(p.name)}</b></td><td dir="rtl" style="font-size:12px">${esc(summary)}</td>
       <td><button class="btn sm" data-act="editoffpat" data-id="${esc(p.id)}">ویرایش</button> ${patterns.length > 1 ? `<button class="btn sm danger" data-act="deloffpat" data-id="${esc(p.id)}" data-confirm="حذف این الگوی اداری؟">حذف</button>` : ''}</td></tr>`;
   }).join('');
 

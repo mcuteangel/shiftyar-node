@@ -250,7 +250,7 @@
         const sd = Math.floor(iv[0] / 1440), ed = Math.floor((iv[1] - 1) / 1440);
         const s = clock(iv[0]) + (sd ? ' (روز بعد)' : '');
         const e = clock(iv[1]) + (ed > sd ? (ed - sd === 1 && sd === 0 ? ' (فردا)' : ' (روز بعد)') : '');
-        return fa(s) + ' تا ' + fa(e);
+        return '\u202B' + fa(s) + ' تا ' + fa(e) + '\u202C';
       })
       .join('، ');
   }
