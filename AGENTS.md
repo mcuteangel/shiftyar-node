@@ -95,7 +95,7 @@ It features zero external npm dependencies, running natively on Node.js 22.13+ u
    - **Never push directly to `main`**: The `main` branch is strictly protected (including for admins).
    - **Mandatory Review Queue**: Pull Requests **must never be auto-merged or merged immediately**. All PRs must remain in the review queue awaiting human inspection and approval (`required_approving_review_count >= 1`). This is enforced by GitHub repository branch protection rules on `main`.
    - For any new task:
-     1. Sync and branch from latest `main`: `git checkout main && git pull && git checkout -b feat/your-feature-name` (always branch from updated `main` to avoid carrying unmerged commits).
+     1. Fetch and branch from latest remote `main`: `git fetch origin && git checkout -b feat/your-feature-name origin/main` (always branch directly from `origin/main` to avoid carrying unmerged local commits).
      2. Implement focused changes.
      3. Run test suites and ensure all pass with 0 failures.
      4. Regenerate `shiftyar.html` with `python build.py` whenever files under `web/` change.
