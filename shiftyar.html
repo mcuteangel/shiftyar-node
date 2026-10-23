@@ -999,7 +999,7 @@ const canEdit = () => role() !== 'staff';
 const DB = { cfg: null, assign: {}, log: [] };
 const ui = {
   tab: 'sched', jy: 1405, jm: 1, dept: 'all', brush: 'M', pcalPerson: '', editPerson: null, shiftDraft: null,
-  shiftTab: 'hospital', editOfficePattern: null,
+  shiftTab: 'hospital', editOfficePattern: null, editMode: false,
   rep: { from: null, to: null, dept: 'all' }, undo: [], ctx: null,
 };
 
@@ -1423,21 +1423,30 @@ function viewSched() {
     body += rowHtml(p, ctx);
   }
   const legend = `<div class="legend">${DB.cfg.shifts.map((s) => `<span><span class="c" style="--dc:${NO_COLOR}">${esc(s.code)}</span>${esc(s.name)} ${hmH(shiftMinutes(DB.cfg.shifts, s.code))}</span>`).join('')}</div>`;
+  const editBtn = canEdit()
+    ? `<button class="btn ${ui.editMode ? 'primary' : ''}" data-act="toggleedit" style="display:inline-flex;align-items:center;gap:6px">
+        <span>${ui.editMode ? '🔒 قفل و اتمام ویرایش' : '✏️ فعال‌سازی ویرایش تقویم'}</span>
+      </button>`
+    : '';
+  const editControls = (canEdit() && ui.editMode)
+    ? `<div class="panel">${brushBar()}
+        <div class="bar" style="flex-wrap:wrap;gap:6px">
+          <button class="btn" data-act="undo"${ui.undo.length ? '' : ' disabled'}>بازگردانی آخرین تغییر</button>
+          <label class="rows"><span class="note">کپی الگو از</span>
+            <select id="copy-src"><option value="7">۷ روز قبل (هفتگی)</option><option value="14">۱۴ روز قبل</option><option value="28">۲۸ روز قبل</option><option value="pm">همان تاریخِ ماه قبل</option></select></label>
+          <button class="btn" data-act="copypat" data-confirm="خانه‌های این ماه رونویسی می‌شوند. تأیید؟">اعمال</button>
+          <span class="sp"></span>
+          <button class="btn" data-act="autoassignoffice" title="پر کردن خودکار روزهای کاری اداری مطابق الگوی هر فرد">تکمیل خودکار اداری</button>
+          <button class="btn" data-act="autoopen">پیشنهاد خودکار شیفت</button>
+          <button class="btn danger" data-act="clearmonth" data-confirm="برنامهٔ این ماه پاک شود؟">پاک‌کردن ماه</button>
+        </div>
+        <div class="note">حالت ویرایش فعال است: با انتخاب قلم می‌توانید روی خانه‌ها کلیک کنید یا بکشید. پس از اتمام کار، دکمهٔ «قفل ویرایش» را بزنید.</div>
+      </div>`
+    : '';
   return `${sampleBar}
-    ${monthNav(`<span class="sp"></span>${deptSelect('f-dept', ui.dept, true)}`)}
-    <div class="panel">${brushBar()}
-      <div class="bar">
-        <button class="btn" data-act="undo"${ui.undo.length ? '' : ' disabled'}>بازگردانی آخرین تغییر</button>
-        <label class="rows"><span class="note">کپی الگو از</span>
-          <select id="copy-src"><option value="7">۷ روز قبل (هفتگی)</option><option value="14">۱۴ روز قبل</option><option value="28">۲۸ روز قبل</option><option value="pm">همان تاریخِ ماه قبل</option></select></label>
-        <button class="btn" data-act="copypat" data-confirm="خانه‌های این ماه رونویسی می‌شوند. تأیید؟">اعمال</button>
-        <span class="sp"></span>
-        ${canEdit() ? '<button class="btn" data-act="autoassignoffice" title="پر کردن خودکار روزهای کاری اداری مطابق الگوی هر فرد">تکمیل خودکار اداری</button> <button class="btn" data-act="autoopen">پیشنهاد خودکار شیفت</button>' : ''}${exportBtns('sched')}
-        <button class="btn danger" data-act="clearmonth" data-confirm="برنامهٔ این ماه پاک شود؟">پاک‌کردن ماه</button>
-      </div>
-      <div class="note">با قلم انتخاب‌شده روی خانه‌ها بکشید یا کلیک کنید. کلیک دوباره روی خانه‌ای با همان مقدار، آن را پاک می‌کند. ستون‌های قرمز تعطیل‌اند.</div>
-    </div>
-    ${autoState.open && canEdit() ? autoPanel() : ''}
+    ${monthNav(`<span class="sp"></span>${deptSelect('f-dept', ui.dept, true)}<span class="sp"></span>${editBtn}${exportBtns('sched')}`)}
+    ${editControls}
+    ${autoState.open && canEdit() && ui.editMode ? autoPanel() : ''}
     ${ps.length ? `<div class="rwrap"><table class="roster" id="roster"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`
       : `<div class="panel empty"><b>هنوز پرسنلی در این نما نیست</b><span>از تب «پرسنل» نفرات را اضافه کنید، سپس اینجا شیفت‌ها را بکشید.</span><button class="btn primary" data-tab="people">رفتن به پرسنل</button></div>`}
     ${legend}<div id="side" class="rows" style="flex-direction:column;align-items:stretch;gap:8px">${sideHtml(ps, ctx)}</div>`;
@@ -1470,8 +1479,13 @@ function viewPcal() {
   const picker = ps.length > 1
     ? `<select id="pcal-person" aria-label="فرد">${ps.map((p) => `<option value="${p.id}"${p.id === ui.pcalPerson ? ' selected' : ''}>${esc(pname(p))}</option>`).join('')}</select>`
     : `<b>${esc(pname(ps[0]))}</b>`;
-  return `${monthNav(`<span class="sp"></span>${picker}`)}
-    <div class="panel">${canEdit() ? brushBar() : ''}<div id="pcal-body">${pcalBody()}</div></div>`;
+  const editBtn = canEdit()
+    ? `<button class="btn ${ui.editMode ? 'primary' : ''}" data-act="toggleedit" style="display:inline-flex;align-items:center;gap:6px">
+        <span>${ui.editMode ? '🔒 قفل و اتمام ویرایش' : '✏️ فعال‌سازی ویرایش تقویم'}</span>
+      </button>`
+    : '';
+  return `${monthNav(`<span class="sp"></span>${picker}<span class="sp"></span>${editBtn}`)}
+    <div class="panel">${canEdit() && ui.editMode ? brushBar() : ''}<div id="pcal-body">${pcalBody()}</div></div>`;
 }
 function pcalBody() {
   const p = person(ui.pcalPerson); if (!p) return '';
@@ -2235,7 +2249,7 @@ function applyBrush(td) {
   if (setAssign(pid, j, nw, stroke)) { if (ui.tab === 'pcal') refreshPcal(); else refreshRow(pid); }
 }
 document.addEventListener('pointerdown', (e) => {
-  if (e.button > 0 || !canEdit()) return;
+  if (e.button > 0 || !canEdit() || !ui.editMode) return;
   const td = e.target.closest('.cell[data-pid]');
   if (!td || !(ui.tab === 'sched' || ui.tab === 'pcal')) return;
   painting = true; stroke = []; strokeFirst = true;
@@ -2243,7 +2257,7 @@ document.addEventListener('pointerdown', (e) => {
   e.preventDefault();
 });
 document.addEventListener('pointerover', (e) => {
-  if (!painting) return;
+  if (!painting || !ui.editMode) return;
   const td = e.target.closest('.cell[data-pid]');
   if (td) applyBrush(td);
 });
@@ -2252,7 +2266,7 @@ document.addEventListener('pointerup', endStroke);
 document.addEventListener('pointercancel', endStroke);
 document.addEventListener('keydown', (e) => {
   const td = e.target.closest && e.target.closest('.cell[data-pid]');
-  if (!td || !canEdit()) return;
+  if (!td || !canEdit() || !ui.editMode) return;
   if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault(); stroke = []; strokeFirst = true; const pid = td.dataset.pid, j = td.dataset.j;
     applyBrush(td); finishStroke(stroke, codeLabel(ui.brush)); stroke = null;
@@ -2309,6 +2323,12 @@ document.addEventListener('click', async (e) => {
   const act = t.dataset.act, id = t.dataset.id;
   const cfg = DB.cfg;
   switch (act) {
+    case 'toggleedit': {
+      ui.editMode = !ui.editMode;
+      if (ui.editMode) flash('حالت ویرایش فعال شد. اکنون می‌توانید شیفت‌ها را تغییر دهید.', true);
+      else flash('تقویم قفل شد (حالت فقط مشاهده).', true);
+      return render();
+    }
     case 'mprev': ui.jm--; if (ui.jm < 1) { ui.jm = 12; ui.jy--; } ui.rep.from = null; ui.undo = []; return render();
     case 'mnext': ui.jm++; if (ui.jm > 12) { ui.jm = 1; ui.jy++; } ui.rep.from = null; ui.undo = []; return render();
     case 'mtoday': { const d = d2j(todayJdn()); ui.jy = d.jy; ui.jm = d.jm; ui.rep.from = null; ui.undo = []; return render(); }
