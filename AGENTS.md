@@ -91,15 +91,20 @@ It features zero external npm dependencies, running natively on Node.js 22.13+ u
      - Calculation summary columns (`.sum`) are omitted in calendar printing.
      - Colspan for department headers (`tr.grp td`) must match the actual printed column count.
 
-6. **Mandatory Git Commit After Successful Verification:**
-   - Immediately after completing any feature, enhancement, or bug fix and passing all automated test suites, changes **must be committed to git** with a clear, descriptive conventional commit message (e.g. `feat: ...`, `fix: ...`).
-   - This ensures working states are durably preserved and prevents loss of effective progress across sessions or unexpected rollbacks.
+6. **Git Workflow: Branching, Commit, and PR Requirements:**
+   - **Never push directly to `main`**: The `main` branch is strictly protected (including for admins). All changes must go through a dedicated feature or fix branch and be merged exclusively via a **Pull Request (PR)**.
+   - For any new task:
+     1. Create and switch to a descriptive branch (e.g. `git checkout -b feat/office-shifts` or `git checkout -b fix/time-direction`).
+     2. Implement changes, run tests, and regenerate `shiftyar.html` with `python build.py`.
+     3. Commit changes with a conventional commit message (e.g. `git commit -m "feat(scope): description"`).
+     4. Push the branch to remote: `git push -u origin <branch-name>`.
+     5. Open a Pull Request using `gh pr create --base main --head <branch-name> --title "..." --body "..."` (and merge via `gh pr merge --merge` or web interface).
 
 ---
 
 ## 4. Verification & Testing Protocol
 
-Before committing or completing any feature or bugfix, run and verify the test suites:
+Before creating a PR or completing any feature or bugfix, run and verify the test suites:
 
 ```bash
 # Run core calculation tests
@@ -117,9 +122,14 @@ node test/export.test.js
 # Rebuild single-file artifact
 python build.py
 
-# Commit verified changes to git
+# Commit verified changes to git branch
+git checkout -b feat/your-feature-name
 git add .
 git commit -m "feat(scope): concise description of verified change"
+git push -u origin feat/your-feature-name
+
+# Create Pull Request into main
+gh pr create --base main --head feat/your-feature-name --title "feat(scope): description" --body "Details of changes"
 ```
 
-All tests must pass cleanly with 0 failures before committing and concluding work.
+All tests must pass cleanly with 0 failures before creating a PR and concluding work.
