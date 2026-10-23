@@ -93,7 +93,7 @@ It features zero external npm dependencies, running natively on Node.js 22.13+ u
 
 6. **Git Workflow: Branching, PRs, and Mandatory Review Queue:**
    - **Never push directly to `main`**: The `main` branch is strictly protected (including for admins).
-   - **Mandatory Review Queue**: Pull Requests **must never be auto-merged or merged immediately**. All PRs must remain in the review queue awaiting human inspection and approval (`required_approving_review_count >= 1`).
+   - **Mandatory Review Queue**: Pull Requests **must never be auto-merged or merged immediately**. All PRs must remain in the review queue awaiting human inspection and approval (`required_approving_review_count >= 1`). This is enforced by GitHub repository branch protection rules on `main`.
    - For any new task:
      1. Sync and branch from latest `main`: `git checkout main && git pull && git checkout -b feat/your-feature-name` (always branch from updated `main` to avoid carrying unmerged commits).
      2. Implement focused changes.
@@ -119,14 +119,17 @@ node test/requests.test.js && \
 node test/export.test.js && \
 python build.py
 
-# 2. Stage ONLY the specific modified files (avoid git add . to prevent leaking secrets/unrelated files)
+# 2. Ensure you are on the task branch before committing (never commit unreviewed work directly to main)
+git checkout feat/your-feature-name
+
+# 3. Stage ONLY the specific modified files (avoid git add . to prevent leaking secrets/unrelated files)
 git add <modified-file-1> <modified-file-2> ...
 
-# 3. Commit and push to your task branch
+# 4. Commit and push to your task branch
 git commit -m "feat(scope): concise description of verified change"
 git push -u origin feat/your-feature-name
 
-# 4. Create Pull Request into main and leave it in the review queue
+# 5. Create Pull Request into main and leave it in the review queue
 gh pr create --base main --head feat/your-feature-name --title "feat(scope): description" --body "Details of changes"
 ```
 
