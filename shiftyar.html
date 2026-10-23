@@ -1425,7 +1425,7 @@ function viewSched() {
   const legend = `<div class="legend">${DB.cfg.shifts.map((s) => `<span><span class="c" style="--dc:${NO_COLOR}">${esc(s.code)}</span>${esc(s.name)} ${hmH(shiftMinutes(DB.cfg.shifts, s.code))}</span>`).join('')}</div>`;
   const editBtn = canEdit()
     ? `<button class="btn ${ui.editMode ? 'primary' : ''}" data-act="toggleedit" style="display:inline-flex;align-items:center;gap:6px">
-        <span>${ui.editMode ? '🔒 قفل و اتمام ویرایش' : '✏️ فعال‌سازی ویرایش تقویم'}</span>
+        <span>${ui.editMode ? '🔒 قفل و اتمام ویرایش' : '✏️ فعال‌سازی ویرایش شیفت‌ها'}</span>
       </button>`
     : '';
   const editControls = (canEdit() && ui.editMode)
@@ -1481,7 +1481,7 @@ function viewPcal() {
     : `<b>${esc(pname(ps[0]))}</b>`;
   const editBtn = canEdit()
     ? `<button class="btn ${ui.editMode ? 'primary' : ''}" data-act="toggleedit" style="display:inline-flex;align-items:center;gap:6px">
-        <span>${ui.editMode ? '🔒 قفل و اتمام ویرایش' : '✏️ فعال‌سازی ویرایش تقویم'}</span>
+        <span>${ui.editMode ? '🔒 قفل و اتمام ویرایش' : '✏️ فعال‌سازی ویرایش شیفت‌ها'}</span>
       </button>`
     : '';
   return `${monthNav(`<span class="sp"></span>${picker}<span class="sp"></span>${editBtn}`)}
