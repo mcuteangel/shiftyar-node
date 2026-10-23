@@ -91,14 +91,19 @@ It features zero external npm dependencies, running natively on Node.js 22.13+ u
      - Calculation summary columns (`.sum`) are omitted in calendar printing.
      - Colspan for department headers (`tr.grp td`) must match the actual printed column count.
 
-6. **Git Workflow: Branching, Commit, and PR Requirements:**
-   - **Never push directly to `main`**: The `main` branch is strictly protected (including for admins). All changes must go through a dedicated feature or fix branch and be merged exclusively via a **Pull Request (PR)**.
+6. **Git Workflow: Branching, PRs, and Mandatory Review Queue:**
+   - **Never push directly to `main`**: The `main` branch is strictly protected (including for admins).
+   - **Mandatory Review Queue**: Pull Requests **must never be auto-merged or merged immediately**. All PRs must remain in the review queue awaiting human inspection and approval (`required_approving_review_count >= 1`). This is enforced by GitHub repository branch protection rules on `main`.
    - For any new task:
-     1. Create and switch to a descriptive branch (e.g. `git checkout -b feat/office-shifts` or `git checkout -b fix/time-direction`).
-     2. Implement changes, run tests, and regenerate `shiftyar.html` with `python build.py`.
-     3. Commit changes with a conventional commit message (e.g. `git commit -m "feat(scope): description"`).
-     4. Push the branch to remote: `git push -u origin <branch-name>`.
-     5. Open a Pull Request using `gh pr create --base main --head <branch-name> --title "..." --body "..."` (and merge via `gh pr merge --merge` or web interface).
+     1. Fetch and branch from latest remote `main`: `git fetch origin && git checkout -b feat/your-feature-name origin/main` (always branch directly from `origin/main` to avoid carrying unmerged local commits).
+     2. Implement focused changes.
+     3. Run test suites and ensure all pass with 0 failures.
+     4. Regenerate `shiftyar.html` with `python build.py` whenever files under `web/` change.
+     5. Stage only the intended task files specifically (never use `git add .` to avoid accidental secret or unrelated file leakage): `git add <files>`.
+     6. Commit changes with a conventional commit message (e.g. `git commit -m "feat(scope): description"`).
+     7. Push the branch to remote: `git push -u origin feat/your-feature-name`.
+     8. Open a Pull Request using `gh pr create --base main --head feat/your-feature-name --title "..." --body "..."`.
+     9. **Stop and wait**: Leave the PR in the review queue for the project owner to review, test, and merge. Never run `gh pr merge` autonomously.
 
 ---
 
@@ -107,29 +112,25 @@ It features zero external npm dependencies, running natively on Node.js 22.13+ u
 Before creating a PR or completing any feature or bugfix, run and verify the test suites:
 
 ```bash
-# Run core calculation tests
-node test/core.test.js
-
-# Run backend API, RBAC, and auth tests
-node test/server.test.js
-
-# Run leave requests and shift swap tests
-node test/requests.test.js
-
-# Run Excel export generation tests
-node test/export.test.js
-
-# Rebuild single-file artifact
+# 1. Run all test suites and ensure zero failures
+node test/core.test.js && \
+node test/server.test.js && \
+node test/requests.test.js && \
+node test/export.test.js && \
 python build.py
 
-# Commit verified changes to git branch
-git checkout -b feat/your-feature-name
-git add .
+# 2. Ensure you are on the task branch before committing (never commit unreviewed work directly to main)
+git checkout feat/your-feature-name
+
+# 3. Stage ONLY the specific modified files (avoid git add . to prevent leaking secrets/unrelated files)
+git add <modified-file-1> <modified-file-2> ...
+
+# 4. Commit and push to your task branch
 git commit -m "feat(scope): concise description of verified change"
 git push -u origin feat/your-feature-name
 
-# Create Pull Request into main
+# 5. Create Pull Request into main and leave it in the review queue
 gh pr create --base main --head feat/your-feature-name --title "feat(scope): description" --body "Details of changes"
 ```
 
-All tests must pass cleanly with 0 failures before creating a PR and concluding work.
+All tests must pass cleanly with 0 failures before creating a PR. The PR must then wait in the review queue for human review.
