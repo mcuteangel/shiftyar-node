@@ -134,6 +134,8 @@ table.roster .nm { border-right: 6px solid var(--dc, var(--line)); }
 table.roster .nm b { display: block; font-weight: 600; font-size: 13px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 table.roster .nm small { font-size: 11px; line-height: 1.2; display: block; }
 table.roster td.cell { width: 30px; min-width: 30px; height: 40px; cursor: pointer; user-select: none; -webkit-user-select: none; }
+table.roster td.cell.locked { opacity: .55; cursor: not-allowed; }
+table.roster td.cell.locked:hover { background: transparent; }
 table.roster td.cell:hover { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 table.roster td.cell.hol:hover { background: color-mix(in srgb, var(--accent) 12%, var(--hol)); }
 table.roster td.sum { min-width: 62px; padding: 0 6px; white-space: nowrap; background: var(--surface); }
@@ -599,6 +601,22 @@ table.roster { width: 100%; }
     return m;
   }
 
+  /* ---------- بخش‌ها: بخش اصلی + بخش‌های فرعی، و بخشِ هر خانهٔ شیفت ---------- */
+  /** فهرست بخش‌های یک نفر: بخش اصلی اول، سپس بخش‌های فرعی (بدون تکرار و خالی) */
+  function personDepts(p) {
+    const out = [];
+    if (p) {
+      if (p.deptId) out.push(p.deptId);
+      for (const d of (p.extraDeptIds || [])) if (d && !out.includes(d)) out.push(d);
+    }
+    return out;
+  }
+  /** بخشِ یک خانهٔ شیفت: بخشِ صریحِ خانه، وگرنه بخش اصلی نفر (خانه‌های قدیمی) */
+  function cellDept(db, p, j) {
+    const explicit = db.assignDept && db.assignDept[p.id] && db.assignDept[p.id][j];
+    return explicit || (p && p.deptId) || '';
+  }
+
   /* ---------- محاسبه برای یک نفر در بازه [a, b] (شماره روز ژولیانی) ---------- */
   function findOfficePattern(db, p) {
     if (p.workType !== 'office') return null;
@@ -673,6 +691,60 @@ table.roster { width: 100%; }
     }
     weighted = Math.round(weighted * 100) / 100;
     return { days, holCount, duty, actual, weighted, holidayMins, credit, overtime: weighted + credit - duty, counts };
+  }
+
+  /**
+   * تفکیک کارکرد یک نفر در بازه بر اساس بخشِ خانهٔ شیفت (نه بخشِ نفر).
+   * خروجی: { deptId: { actual, weighted, credit, counts } }؛ موظفی (duty) سطحِ
+   * نفر است و اینجا تقسیم نمی‌شود، پس در خروجی نیست. بازه‌های هر بخش جداگانه
+   * اجتماع می‌شوند؛ شیفتی که از نیمه‌شب می‌گذرد به بخشِ روزِ شروعش می‌رسد.
+   */
+  function computeDeptSplit(db, p, a, b, hm) {
+    const S = db.settings;
+    hm = hm || holidayMap(S, db.holidays, a, b);
+    const mine = (db.assign && db.assign[p.id]) || {};
+    const isOff = p.workType === 'office';
+    const offPat = isOff ? findOfficePattern(db, p) : null;
+    const factor = (S.factors && S.factors[p.contract]) != null ? S.factors[p.contract] : 1;
+    const split = {};
+    const slot = (d) => (split[d] = split[d] || { actual: 0, weighted: 0, credit: 0, counts: {} });
+    const blocksByDept = {};
+    for (const k in mine) {
+      const j = +k, code = mine[k];
+      const inRange = j >= a && j <= b;
+      const d = cellDept(db, p, j);
+      let dayStandardDuty = S.dutyMin;
+      if (isOff && offPat) dayStandardDuty = ivsMinutes(officePatternIvs(offPat, weekdayOf(j)));
+      if (SPECIAL[code]) {
+        if (inRange) {
+          const s = slot(d);
+          s.counts[code] = (s.counts[code] || 0) + 1;
+          if (SPECIAL[code].credit && !hm[j]) s.credit += dayStandardDuty;
+        }
+        continue;
+      }
+      if (j < a - 3 || j > b) continue;
+      if (inRange) { const s = slot(d); s.counts[code] = (s.counts[code] || 0) + 1; }
+      const sh = (db.shifts || []).find((s) => s.code === code);
+      let ivs;
+      if (isOff && offPat && (code === 'OF' || code === 'M' || (sh && sh.isOffice))) ivs = officePatternIvs(offPat, weekdayOf(j));
+      else ivs = shiftIvs(db.shifts, code);
+      const list = (blocksByDept[d] = blocksByDept[d] || []);
+      for (const iv of ivs) list.push([j * 1440 + iv[0], j * 1440 + iv[1]]);
+    }
+    for (const d in blocksByDept) {
+      const s = slot(d);
+      for (const iv of mergeIv(blocksByDept[d])) {
+        for (let j = Math.floor(iv[0] / 1440); j <= Math.floor((iv[1] - 1) / 1440); j++) {
+          if (j < a || j > b) continue;
+          const mins = Math.min(iv[1], (j + 1) * 1440) - Math.max(iv[0], j * 1440);
+          s.actual += mins;
+          s.weighted += hm[j] ? mins * factor : mins;
+        }
+      }
+      s.weighted = Math.round(s.weighted * 100) / 100;
+    }
+    return split;
   }
 
   /* ---------- حداقل فاصله بین شیفت‌ها ---------- */
@@ -798,7 +870,8 @@ table.roster { width: 100%; }
     const place = (p, j, code) => {
       work[p.id][j] = code; load[p.id] += minutesOn(p, j, code);
       cnt[p.id][code] = (cnt[p.id][code] || 0) + 1;
-      changes.push({ pid: p.id, j, code });
+      // اگر برنامه برای یک بخش مشخص محاسبه می‌شود، خانه‌های ساخته‌شده همان بخش را می‌گیرند
+      changes.push(o.dept ? { pid: p.id, j, code, deptId: o.dept } : { pid: p.id, j, code });
     };
     // درخواست‌های «این شیفت را می‌خواهم» اول و تا جای ممکن اعمال می‌شوند
     for (const w of wishes.filter((x) => x.kind === 'want').sort((x, y) => x.j - y.j)) {
@@ -881,7 +954,7 @@ table.roster { width: 100%; }
     MONTHS, WD_SHORT, WD_FULL, FA, fa, toLatin, pad2, fmtHM, fmtHMlatin, fmtDate, fmtDateLatin, parseDate, toMin,
     SPECIAL, CONTRACTS, WORK_TYPES, defaultOfficePatterns, defaultShifts, defaultHolidays, defaultSettings,
     mergeIv, isOfficeShift, officePatternDay, officePatternIvs, findOfficePattern, autoAssignOffice,
-    shiftIvs, ivsMinutes, shiftMinutes, ivText, holidayInfo, holidayMap, computeRange, restIssues, validateShift, suggestSchedule,
+    shiftIvs, ivsMinutes, shiftMinutes, ivText, holidayInfo, holidayMap, computeRange, computeDeptSplit, personDepts, cellDept, restIssues, validateShift, suggestSchedule,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = Core;
   else root.Core = Core;
@@ -998,9 +1071,9 @@ const canConfig = () => role() === 'admin';
 const canEdit = () => role() !== 'staff';
 
 /* ---------- داده ---------- */
-const DB = { cfg: null, assign: {}, log: [] };
+const DB = { cfg: null, assign: {}, assignDept: {}, log: [] };
 const ui = {
-  tab: 'sched', jy: 1405, jm: 1, dept: 'all', brush: 'M', pcalPerson: '', editPerson: null, shiftDraft: null,
+  tab: 'sched', jy: 1405, jm: 1, dept: 'all', paintDept: '', brush: 'M', pcalPerson: '', editPerson: null, shiftDraft: null,
   shiftTab: 'hospital', editOfficePattern: null, editMode: false,
   rep: { from: null, to: null, dept: 'all' }, undo: [], ctx: null,
 };
@@ -1013,20 +1086,58 @@ function normalizeCfg(c) {
   c = c || {};
   const s = Object.assign({}, d.settings, c.settings || {});
   s.factors = Object.assign({}, d.settings.factors, (c.settings || {}).factors || {});
+  const depts = Array.isArray(c.depts) ? c.depts : [];
+  const deptIds = new Set(depts.map((x) => x.id));
+  const people = (Array.isArray(c.people) ? c.people : []).map((p) => {
+    const extra = (Array.isArray(p.extraDeptIds) ? p.extraDeptIds : [])
+      .filter((x) => typeof x === 'string' && deptIds.has(x) && x !== p.deptId);
+    return Object.assign({}, p, { extraDeptIds: Array.from(new Set(extra)) });
+  });
   return {
     settings: s,
-    depts: Array.isArray(c.depts) ? c.depts : [],
-    people: Array.isArray(c.people) ? c.people : [],
+    depts,
+    people,
     shifts: Array.isArray(c.shifts) && c.shifts.length ? c.shifts : d.shifts,
     holidays: Array.isArray(c.holidays) ? c.holidays : d.holidays,
     sample: !!c.sample,
   };
 }
-const dbv = () => ({ settings: DB.cfg.settings, holidays: DB.cfg.holidays, shifts: DB.cfg.shifts, assign: DB.assign, people: DB.cfg.people });
+/** بخش‌های فرعیِ ذخیره‌شده در پشتیبان را اعتبارسنجی می‌کند: بخشِ ناموجود یا غیرعضو حذف می‌شود (خانه به بخش اصلی برمی‌گردد) */
+function sanitizeAssignDept(cfg, assignDept) {
+  const out = {};
+  const deptIds = new Set((cfg.depts || []).map((x) => x.id));
+  const byId = new Map((cfg.people || []).map((p) => [p.id, p]));
+  for (const pid in (assignDept || {})) {
+    const p = byId.get(pid); if (!p) continue;
+    const allowed = new Set([p.deptId, ...(p.extraDeptIds || [])].filter(Boolean));
+    for (const j in assignDept[pid]) {
+      const d = assignDept[pid][j];
+      if (d && deptIds.has(d) && allowed.has(d)) (out[pid] = out[pid] || {})[+j] = d;
+    }
+  }
+  return out;
+}
+const dbv = () => ({ settings: DB.cfg.settings, holidays: DB.cfg.holidays, shifts: DB.cfg.shifts, assign: DB.assign, assignDept: DB.assignDept, people: DB.cfg.people });
 const person = (id) => DB.cfg.people.find((p) => p.id === id);
 const dept = (id) => DB.cfg.depts.find((d) => d.id === id);
 const pname = (p) => `${p.first || ''} ${p.last || ''}`.trim() || 'بدون نام';
 const deptColor = (p) => (dept(p.deptId) || {}).color || NO_COLOR;
+/** بخش‌های یک نفر: اصلی + فرعی */
+const personDepts = (p) => (p ? [p.deptId, ...(p.extraDeptIds || [])].filter(Boolean).filter((d, i, a) => a.indexOf(d) === i) : []);
+const belongsToDept = (p, deptId) => personDepts(p).includes(deptId);
+/** بخشِ یک خانه: بخشِ صریحِ خانه، وگرنه بخش اصلی نفر */
+const cellDept = (pid, j) => {
+  const p = person(pid);
+  return ((DB.assignDept[pid] || {})[j]) || (p ? p.deptId : '') || '';
+};
+const cellColor = (pid, j) => (dept(cellDept(pid, j)) || {}).color || NO_COLOR;
+/** نام بخش‌های درگیر در بازه برای یک نفر (برای ستون بخش در گزارش) */
+const personDeptNames = (p, split) => {
+  const ids = split ? Object.keys(split) : [];
+  const names = ids.map((id) => (dept(id) || {}).name).filter(Boolean);
+  if (names.length) return names.join('، ');
+  return (dept(p.deptId) || {}).name || '—';
+};
 const shiftOf = (code) => DB.cfg.shifts.find((s) => s.code === code);
 const codeLabel = (c) => (!c ? 'خالی' : SPECIAL[c] ? SPECIAL[c].name : c);
 const monthId = (jy, jm) => jy + '-' + pad2(jm);
@@ -1068,11 +1179,13 @@ const Store = {
     const r = await this.api('GET', '/api/config');
     DB.cfg = normalizeCfg(r.cfg);
     this.cfgVersion = r.version; this.rev = r.rev;
-    this.loaded = new Set(); DB.assign = {};
+    this.loaded = new Set(); DB.assign = {}; DB.assignDept = {};
   },
-  applyRange(a, b, assign) {
+  applyRange(a, b, assign, assignDept) {
     for (const pid in DB.assign) for (const k in DB.assign[pid]) { const j = +k; if (j >= a && j <= b) delete DB.assign[pid][k]; }
+    for (const pid in DB.assignDept) for (const k in DB.assignDept[pid]) { const j = +k; if (j >= a && j <= b) delete DB.assignDept[pid][k]; }
     for (const pid in assign) for (const j in assign[pid]) (DB.assign[pid] = DB.assign[pid] || {})[+j] = assign[pid][j];
+    for (const pid in (assignDept || {})) for (const j in assignDept[pid]) (DB.assignDept[pid] = DB.assignDept[pid] || {})[+j] = assignDept[pid][j];
   },
   startPolling() {
     clearInterval(this.pollTimer);
@@ -1124,7 +1237,7 @@ const Store = {
       DB.cfg = defaultCfg();
       try {
         const raw = localStorage.getItem('shiftyar.v1');
-        if (raw) { const o = JSON.parse(raw); DB.cfg = normalizeCfg(o.cfg); DB.assign = o.assign || {}; DB.log = o.log || []; }
+        if (raw) { const o = JSON.parse(raw); DB.cfg = normalizeCfg(o.cfg); DB.assign = o.assign || {}; DB.assignDept = sanitizeAssignDept(DB.cfg, o.assignDept); DB.log = o.log || []; }
       } catch (e) { /* خالی */ }
     }
   },
@@ -1142,7 +1255,7 @@ const Store = {
       const a = j2d(jy, jm, 1), b = a + monthLen(jy, jm) - 1;
       try {
         const r = await this.api('GET', `/api/assign?from=${a}&to=${b}`);
-        this.applyRange(a, b, r.assign);
+        this.applyRange(a, b, r.assign, r.assignDept);
         this.loaded.add(id);
       } catch (e) { this.fail(e); }
       return;
@@ -1152,16 +1265,23 @@ const Store = {
     if (this.loaded.has(id)) return;
     try {
       const s = await this.db.doc('assign/' + id).get();
-      if (s.exists) this.mergeMonth(jy, jm, (s.data() || {}).m || {});
+      if (s.exists) this.mergeMonth(jy, jm, (s.data() || {}).m || {}, (s.data() || {}).d || {});
       this.loaded.add(id);
     } catch (e) { this.fail(e); }
   },
-  mergeMonth(jy, jm, m) {
+  mergeMonth(jy, jm, m, d) {
     const a = j2d(jy, jm, 1);
     for (const k in m) {
       const i = k.lastIndexOf(':');
       const pid = k.slice(0, i), dd = +k.slice(i + 1);
       (DB.assign[pid] = DB.assign[pid] || {})[a + dd - 1] = m[k];
+    }
+    // بخشِ خانه‌ها: خانهٔ بدون کد، بخشِ صریح هم ندارد
+    if (d) for (const k in d) {
+      const i = k.lastIndexOf(':');
+      const pid = k.slice(0, i), dd = +k.slice(i + 1), j = a + dd - 1;
+      if ((DB.assign[pid] || {})[j]) (DB.assignDept[pid] = DB.assignDept[pid] || {})[j] = d[k];
+      else if (DB.assignDept[pid]) delete DB.assignDept[pid][j];
     }
   },
   async ensureRange(a, b) {
@@ -1180,18 +1300,25 @@ const Store = {
       for (const d of snap.docs) {
         if (this.loaded.has(d.id)) continue;
         const m = /^(\d{4})-(\d{2})$/.exec(d.id);
-        if (m) { this.mergeMonth(+m[1], +m[2], (d.data() || {}).m || {}); this.loaded.add(d.id); }
+        if (m) { this.mergeMonth(+m[1], +m[2], (d.data() || {}).m || {}, (d.data() || {}).d || {}); this.loaded.add(d.id); }
       }
     } catch (e) { this.fail(e); }
   },
   touchMonth(j) { if (this.mode === 'server') return; const d = d2j(j); this.dirty.months.add(monthId(d.jy, d.jm)); this.schedule(); },
-  touchCell(pid, j, code) { this.pending.set(pid + ':' + j, { pid, j, code: code || null }); this.schedule(); },
+  touchCell(pid, j, code, deptId) { this.pending.set(pid + ':' + j, { pid, j, code: code || null, deptId: deptId === undefined ? null : deptId }); this.schedule(); },
   touchCfg() { if (this.mode === 'server' && !canConfig()) return; this.dirty.cfg = true; this.schedule(); },
   touchLog() { if (this.mode === 'server') return; this.dirty.log = true; this.schedule(); },
   monthDoc(jy, jm) {
-    const a = j2d(jy, jm, 1), b = a + monthLen(jy, jm) - 1, m = {};
-    for (const pid in DB.assign) { const mine = DB.assign[pid]; for (let j = a; j <= b; j++) if (mine[j]) m[pid + ':' + (j - a + 1)] = mine[j]; }
-    return { m };
+    const a = j2d(jy, jm, 1), b = a + monthLen(jy, jm) - 1, m = {}, d = {};
+    for (const pid in DB.assign) {
+      const mine = DB.assign[pid];
+      for (let j = a; j <= b; j++) if (mine[j]) {
+        m[pid + ':' + (j - a + 1)] = mine[j];
+        const cd = (DB.assignDept[pid] || {})[j];
+        if (cd) d[pid + ':' + (j - a + 1)] = cd;
+      }
+    }
+    return { m, d };
   },
   setStatus(s) {
     this.status = s;
@@ -1233,7 +1360,7 @@ const Store = {
             if (e.status === 0) { chunk.forEach((c) => { const k = c.pid + ':' + c.j; if (!this.pending.has(k)) this.pending.set(k, c); }); throw e; }
             if (e.status === 400 || e.status === 403) {
               reloadMsg = e.message + ' تغییرها اعمال نشد.';
-              this.loaded = new Set(); DB.assign = {};
+              this.loaded = new Set(); DB.assign = {}; DB.assignDept = {};
             } else throw e;
           }
         }
@@ -1261,7 +1388,7 @@ const Store = {
     d.cfg = false; d.log = false; d.months = new Set();
     try {
       if (this.mode === 'local') {
-        localStorage.setItem('shiftyar.v1', JSON.stringify({ cfg: DB.cfg, assign: DB.assign, log: DB.log }));
+        localStorage.setItem('shiftyar.v1', JSON.stringify({ cfg: DB.cfg, assign: DB.assign, assignDept: DB.assignDept, log: DB.log }));
       } else if (this.mode === 'db') {
         if (cfg) await this.db.doc('app/config').set(Object.assign({ v: 1 }, DB.cfg));
         for (const id of months) {
@@ -1282,10 +1409,10 @@ const Store = {
     }
   },
   /** جایگزینی کل داده‌ها (بازیابی پشتیبان یا پاک‌سازی) */
-  async replaceAll(cfg, assign, log) {
+  async replaceAll(cfg, assign, assignDept, log) {
     await this.loadAll();
     const oldIds = Array.from(this.loaded);
-    DB.cfg = cfg; DB.assign = assign; DB.log = log;
+    DB.cfg = cfg; DB.assign = assign; DB.assignDept = sanitizeAssignDept(cfg, assignDept); DB.log = log;
     const newIds = new Set();
     for (const pid in assign) for (const j in assign[pid]) { const d = d2j(+j); newIds.add(monthId(d.jy, d.jm)); }
     if (this.mode === 'db') {
@@ -1304,14 +1431,27 @@ function logEv(text) {
   if (DB.log.length > 200) DB.log.length = 200;
   Store.touchLog();
 }
-function setAssign(pid, j, code, stroke) {
+/**
+ * ثبت یک خانهٔ شیفت. deptId بخشِ خانه پس از تغییر است؛ اگر داده نشود، بخشِ
+ * فعلی خانه (یا بخش اصلی برای خانهٔ تازه) حفظ می‌شود. بخشِ خانه فقط به‌صورت
+ * صریح ذخیره می‌شود وقتی با بخش اصلی فرق کند؛ نبودِ ورودی یعنی «بخش اصلی».
+ */
+function setAssign(pid, j, code, stroke, deptId) {
   if (!canEdit()) return false;
+  const p = person(pid);
   const mine = (DB.assign[pid] = DB.assign[pid] || {});
+  const deptMap = (DB.assignDept[pid] = DB.assignDept[pid] || {});
   const old = mine[j];
-  if (old === code || (!old && !code)) return false;
+  const oldDept = deptMap[j] || (p ? p.deptId : '') || '';
+  const nwDept = code ? (deptId !== undefined ? (deptId || '') : oldDept) : '';
+  if (old === code || (!old && !code)) {
+    // کد عوض نشده ولی بخشِ خانه عوض شده (تغییرِ فقطِ بخش) هم یک تغییر است
+    if (!(code && oldDept !== nwDept)) return false;
+  }
   if (code) mine[j] = code; else delete mine[j];
-  if (stroke) stroke.push({ pid, j, old, nw: code });
-  if (isServer()) Store.touchCell(pid, j, code); else Store.touchMonth(j);
+  if (code && nwDept && nwDept !== (p ? p.deptId : '')) deptMap[j] = nwDept; else delete deptMap[j];
+  if (stroke) stroke.push({ pid, j, old, nw: code, oldDept, nwDept });
+  if (isServer()) Store.touchCell(pid, j, code, code ? (nwDept || null) : null); else Store.touchMonth(j);
   return true;
 }
 function finishStroke(stroke, label) {
@@ -1327,11 +1467,12 @@ function finishStroke(stroke, label) {
 
 /* ---------- نمایش‌های مشترک ---------- */
 function monthInfo() { const a = j2d(ui.jy, ui.jm, 1), len = monthLen(ui.jy, ui.jm); return { a, len, b: a + len - 1 }; }
-function chipHtml(code, color) {
+function chipHtml(code, color, deptName) {
   if (!code) return '';
-  if (SPECIAL[code]) return `<span class="c sp ${code}" title="${esc(SPECIAL[code].name)}">${SPECIAL[code].short}</span>`;
+  const suffix = deptName ? ` · ${deptName}` : '';
+  if (SPECIAL[code]) return `<span class="c sp ${code}" title="${esc(SPECIAL[code].name + suffix)}">${SPECIAL[code].short}</span>`;
   const sh = shiftOf(code);
-  return `<span class="c" style="--dc:${esc(color)}" title="${esc(sh ? sh.name : code)}">${esc(code)}</span>`;
+  return `<span class="c" style="--dc:${esc(color)}" title="${esc((sh ? sh.name : code) + suffix)}">${esc(code)}</span>`;
 }
 function sortedPeople() {
   const di = (p) => { const i = DB.cfg.depts.findIndex((d) => d.id === p.deptId); return i < 0 ? 999 : i; };
@@ -1339,10 +1480,25 @@ function sortedPeople() {
 }
 function visiblePeople() {
   let ps = sortedPeople();
-  if (ui.dept === 'none') ps = ps.filter((p) => !dept(p.deptId));
-  else if (ui.dept !== 'all') ps = ps.filter((p) => p.deptId === ui.dept);
+  if (ui.dept === 'none') ps = ps.filter((p) => !personDepts(p).length);
+  else if (ui.dept !== 'all') ps = ps.filter((p) => belongsToDept(p, ui.dept));
   return ps;
 }
+/** بخشِ قلم: بخشِ انتخاب‌شده برای نقاشی، وگرنه بخشِ نمای فعلی، وگرنه بخش اصلی نفر.
+ * در حالت سرور، مدیر بخش فقط بخش‌هایی را می‌تواند بنویسد که مدیرشان است، پس
+ * پیش‌فرض به اولین بخشِ مشترکِ نفر و مدیر می‌رسد تا نقاشی بی‌جهت 403 نگیرد. */
+function paintDeptFor(p) {
+  const mine = (isServer() && ME.user && ME.user.role === 'manager') ? (ME.user.deptIds || []) : null;
+  const ok = (d) => belongsToDept(p, d) && (!mine || mine.includes(d));
+  if (ui.paintDept && ok(ui.paintDept)) return ui.paintDept;
+  if (ui.dept !== 'all' && ui.dept !== 'none' && ok(ui.dept)) return ui.dept;
+  if (mine) { const shared = personDepts(p).find((d) => mine.includes(d)); if (shared) return shared; }
+  return p.deptId || '';
+}
+const paintDeptSelect = (id) => `<label class="f">بخش شیفت<select id="${id}">
+  <option value=""${!ui.paintDept ? ' selected' : ''}>خودکار (بخش نما / اصلی)</option>
+  ${DB.cfg.depts.map((d) => `<option value="${esc(d.id)}"${ui.paintDept === d.id ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}
+  </select></label>`;
 function brushBar() {
   const sh = DB.cfg.shifts;
   const b = (k, big, small) => `<button type="button" data-brush="${esc(k)}" aria-pressed="${ui.brush === k}"><b>${big}</b><small>${small}</small></button>`;
@@ -1373,7 +1529,11 @@ function rowHtml(p, ctx) {
   let cells = '';
   for (let i = 0; i < len; i++) {
     const j = a + i;
-    cells += `<td class="cell${hm[j] ? ' hol' : ''}${iss[j] ? ' warn' : ''}" data-pid="${p.id}" data-j="${j}" tabindex="-1" role="button" aria-label="${esc(pname(p))}، ${fa(i + 1)} ${MONTHS[ui.jm - 1]}"${iss[j] ? ` title="${esc(iss[j].join(' / '))}"` : ''}>${chipHtml(mine[j], color)}</td>`;
+    const cd = cellDept(p.id, j);
+    // در نمای یک بخش، خانه‌های بخش‌های دیگر قفل‌اند: رنگِ بخشِ خودشان را دارند و نقاشی نمی‌شوند
+    const locked = ui.tab === 'sched' && ui.dept !== 'all' && ui.dept !== 'none' && mine[j] && cd !== ui.dept;
+    const dName = cd && cd !== p.deptId ? (dept(cd) || {}).name : '';
+    cells += `<td class="cell${hm[j] ? ' hol' : ''}${iss[j] ? ' warn' : ''}${locked ? ' locked' : ''}" data-pid="${p.id}" data-j="${j}" tabindex="-1" role="button" aria-label="${esc(pname(p))}، ${fa(i + 1)} ${MONTHS[ui.jm - 1]}"${iss[j] ? ` title="${esc(iss[j].join(' / '))}"` : ''}>${chipHtml(mine[j], cellColor(p.id, j), dName)}</td>`;
   }
   const r = computeRange(dbv(), p, a, b, hm);
   const ot = r.overtime;
@@ -1434,6 +1594,7 @@ function viewSched() {
     ? `<div class="panel">${brushBar()}
         <div class="bar" style="flex-wrap:wrap;gap:6px">
           <button class="btn" data-act="undo"${ui.undo.length ? '' : ' disabled'}>بازگردانی آخرین تغییر</button>
+          ${paintDeptSelect('paint-dept')}
           <label class="rows"><span class="note">کپی الگو از</span>
             <select id="copy-src"><option value="7">۷ روز قبل (هفتگی)</option><option value="14">۱۴ روز قبل</option><option value="28">۲۸ روز قبل</option><option value="pm">همان تاریخِ ماه قبل</option></select></label>
           <button class="btn" data-act="copypat" data-confirm="خانه‌های این ماه رونویسی می‌شوند. تأیید؟">اعمال</button>
@@ -1487,7 +1648,7 @@ function viewPcal() {
       </button>`
     : '';
   return `${monthNav(`<span class="sp"></span>${picker}<span class="sp"></span>${editBtn}`)}
-    <div class="panel">${canEdit() && ui.editMode ? brushBar() : ''}<div id="pcal-body">${pcalBody()}</div></div>`;
+    <div class="panel">${canEdit() && ui.editMode ? brushBar() + `<div class="bar" style="flex-wrap:wrap;gap:6px">${paintDeptSelect('paint-dept-pcal')}</div>` : ''}<div id="pcal-body">${pcalBody()}</div></div>`;
 }
 function pcalBody() {
   const p = person(ui.pcalPerson); if (!p) return '';
@@ -1501,7 +1662,9 @@ function pcalBody() {
   for (let i = 0; i < weekdayOf(a); i++) h += '<div class="pc-day blank"></div>';
   for (let i = 0; i < len; i++) {
     const j = a + i;
-    h += `<div class="pc-day cell${hm[j] ? ' hol' : ''}${j === T ? ' today' : ''}${iss[j] ? ' warn' : ''}${canEdit() ? '' : ' ro'}" data-pid="${p.id}" data-j="${j}"${canEdit() ? ' role="button" tabindex="0"' : ''}${iss[j] ? ` title="${esc(iss[j].join(' / '))}"` : ''}><div class="d"><span>${fa(i + 1)}</span>${hm[j] ? `<em>${esc(hm[j].name)}</em>` : ''}</div>${chipHtml(mine[j], color)}</div>`;
+    const cd = cellDept(p.id, j);
+    const dName = cd && cd !== p.deptId ? (dept(cd) || {}).name : '';
+    h += `<div class="pc-day cell${hm[j] ? ' hol' : ''}${j === T ? ' today' : ''}${iss[j] ? ' warn' : ''}${canEdit() ? '' : ' ro'}" data-pid="${p.id}" data-j="${j}"${canEdit() ? ' role="button" tabindex="0"' : ''}${iss[j] ? ` title="${esc(iss[j].join(' / '))}"` : ''}><div class="d"><span>${fa(i + 1)}</span>${hm[j] ? `<em>${esc(hm[j].name)}</em>` : ''}</div>${chipHtml(mine[j], cellColor(p.id, j), dName)}</div>`;
   }
   const ot = r.overtime;
   const st = (l, v, cls) => `<div class="stat ${cls || ''}"><small>${l}</small><b>${hmH(v)}</b></div>`;
@@ -1526,8 +1689,12 @@ function viewPeople() {
       <label class="f">نوع خدمت<select name="workType" id="p-work-type">${Object.keys(WORK_TYPES).map((k) => `<option value="${k}"${curWorkType === k ? ' selected' : ''}>${WORK_TYPES[k]}</option>`).join('')}</select></label>
       <label class="f" id="f-off-pat" style="${curWorkType === 'office' ? '' : 'display:none'}">الگوی کاری اداری<select name="officePatternId">${patterns.map((pt) => `<option value="${esc(pt.id)}"${(e.officePatternId || patterns[0].id) === pt.id ? ' selected' : ''}>${esc(pt.name)}</option>`).join('')}</select></label>
       <label class="f">نوع قرارداد<select name="contract">${Object.keys(CONTRACTS).map((k) => `<option value="${k}"${(e.contract || 'company') === k ? ' selected' : ''}>${CONTRACTS[k]}</option>`).join('')}</select></label>
-      <label class="f">بخش<select name="deptId"><option value="">بدون بخش</option>${DB.cfg.depts.map((d) => `<option value="${esc(d.id)}"${e.deptId === d.id ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select></label>
+      <label class="f">بخش اصلی<select name="deptId"><option value="">بدون بخش</option>${DB.cfg.depts.map((d) => `<option value="${esc(d.id)}"${e.deptId === d.id ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select></label>
     </div>
+    <fieldset style="border:1px solid var(--line);border-radius:6px;padding:8px 12px">
+      <legend class="note">بخش‌های فرعی (این فرد در این بخش‌ها هم شیفت می‌دهد)</legend>
+      <div class="rows">${DB.cfg.depts.map((d) => `<label class="chk"><input type="checkbox" name="extraDept" value="${esc(d.id)}"${(e.extraDeptIds || []).includes(d.id) ? ' checked' : ''}><span class="dot" style="--dc:${esc(d.color)}"></span>${esc(d.name)}</label>`).join('') || '<span class="note">هنوز بخشی تعریف نشده است.</span>'}</div>
+    </fieldset>
     <div class="bar"><button class="btn primary" type="submit">${e.id ? 'ذخیرهٔ تغییرات' : 'افزودن'}</button>${e.id ? '<button class="btn" type="button" data-act="cancelperson">انصراف</button>' : ''}<span id="f-person-msg"></span></div>
     ${DB.cfg.depts.length ? '' : '<div class="note">برای دسته‌بندی با رنگ، ابتدا از تب «بخش‌ها» بخش بسازید.</div>'}
   </form>`;
@@ -1537,7 +1704,8 @@ function viewPeople() {
         const isOff = p.workType === 'office';
         const pat = isOff ? (patterns.find((x) => x.id === p.officePatternId) || patterns[0]) : null;
         const wtLabel = isOff ? `<span class="pill" style="background:#e0f2fe;color:#0369a1;border-color:#bae6fd" title="${esc(pat ? pat.name : '')}">اداری</span>` : '<span class="pill">در گردش</span>';
-        return `<tr><td>${esc(p.code || '—')}</td><td>${esc(pname(p))}</td><td>${dept(p.deptId) ? `<span class="dot" style="--dc:${esc(dept(p.deptId).color)}"></span>${esc(dept(p.deptId).name)}` : '—'}</td><td>${wtLabel}</td><td><span class="pill">${CONTRACTS[p.contract] || ''}</span></td><td dir="ltr" style="text-align:right">${esc(p.phone || '—')}</td>
+        const deptCell = personDepts(p).map((id) => { const d = dept(id); return d ? `<span class="dot" style="--dc:${esc(d.color)}"></span>${esc(d.name)}` : ''; }).filter(Boolean).join('، ') || '—';
+        return `<tr><td>${esc(p.code || '—')}</td><td>${esc(pname(p))}</td><td>${deptCell}</td><td>${wtLabel}</td><td><span class="pill">${CONTRACTS[p.contract] || ''}</span></td><td dir="ltr" style="text-align:right">${esc(p.phone || '—')}</td>
         <td><button class="btn sm" data-act="editperson" data-id="${p.id}">ویرایش</button> <button class="btn sm danger" data-act="delperson" data-id="${p.id}" data-confirm="حذف با برنامه‌هایش؟">حذف</button></td></tr>`;
       }).join('')}
       </tbody></table></div>`
@@ -1549,7 +1717,7 @@ function viewPeople() {
 const PALETTE = ['#e0573f', '#2f7dd1', '#2e9e7a', '#8b5cd6', '#d9a21b', '#d6479b', '#4a8c9f', '#7a8450'];
 function viewDepts() {
   const rows = DB.cfg.depts.map((d) => {
-    const n = DB.cfg.people.filter((p) => p.deptId === d.id).length;
+    const n = DB.cfg.people.filter((p) => belongsToDept(p, d.id)).length;
     return `<tr><td><input type="color" data-dcolor="${esc(d.id)}" value="${esc(d.color)}" aria-label="رنگ ${esc(d.name)}"></td>
       <td><input type="text" data-dname="${esc(d.id)}" value="${esc(d.name)}" aria-label="نام بخش"></td><td>${N(fa(n))} نفر</td>
       <td><button class="btn sm danger" data-act="deldept" data-id="${esc(d.id)}" data-confirm="حذف بخش؟">حذف</button></td></tr>`;
@@ -1704,43 +1872,75 @@ function repRange() {
   if (ui.rep.from == null) { ui.rep.from = a; ui.rep.to = b; }
   return { from: ui.rep.from, to: ui.rep.to };
 }
+/**
+ * گزارش: هر ردیف هم جمعِ کل نفر (r) را دارد و هم تفکیک بر اساس بخشِ خانه (split).
+ * وقتی یک بخش مشخص انتخاب شده باشد، slice همان بخش است و ستون‌های ساعتی همان
+ * برش را نشان می‌دهند؛ موظفی و اضافه/کسر سطحِ نفرند و برای برشِ یک بخش تعریف
+ * نمی‌شوند، پس در آن حالت «—» می‌شوند. در نمای «همه» ردیف‌ها جمعِ کل‌اند و
+ * جدولِ «برنامهٔ کلی بخش‌ها» بر اساس بخشِ خانه جمع می‌شود.
+ */
 function buildReport() {
   const { from, to } = repRange();
   const hm = holidayMap(DB.cfg.settings, DB.cfg.holidays, from, to);
   let ps = sortedPeople();
-  if (ui.rep.dept === 'none') ps = ps.filter((p) => !dept(p.deptId));
-  else if (ui.rep.dept !== 'all') ps = ps.filter((p) => p.deptId === ui.rep.dept);
-  const rows = ps.map((p) => ({ p, r: computeRange(dbv(), p, from, to, hm) }));
+  if (ui.rep.dept === 'none') ps = ps.filter((p) => !personDepts(p).length);
+  else if (ui.rep.dept !== 'all') ps = ps.filter((p) => belongsToDept(p, ui.rep.dept));
+  const rows = ps.map((p) => {
+    const r = computeRange(dbv(), p, from, to, hm);
+    const split = Core.computeDeptSplit(dbv(), p, from, to, hm);
+    const slice = (ui.rep.dept !== 'all' && ui.rep.dept !== 'none')
+      ? (split[ui.rep.dept] || { actual: 0, weighted: 0, credit: 0, counts: {} })
+      : null;
+    return { p, r, split, slice };
+  });
   const used = new Set();
-  rows.forEach((x) => Object.keys(x.r.counts).forEach((k) => used.add(k)));
+  rows.forEach((x) => Object.keys((x.slice || x.r).counts).forEach((k) => used.add(k)));
   const shiftCols = DB.cfg.shifts.map((s) => s.code).filter((c) => used.has(c));
   const spCols = Object.keys(SPECIAL).filter((c) => used.has(c));
   return { from, to, rows, shiftCols, spCols, hm };
 }
+/** مقادیر نمایشی یک ردیف گزارش: برشِ بخش، یا جمعِ کل */
+const repVals = (x) => x.slice || x.r;
+const repDuty = (x) => (x.slice ? null : x.r.duty);
+const repOvertime = (x) => (x.slice ? null : x.r.overtime);
+const hmOrDash = (v) => (v == null ? '—' : hmH(v));
 function viewRep() {
   const R = buildReport();
   const cap = DB.cfg.settings.otCapH * 60;
   const days = R.to - R.from + 1;
   const tot = { duty: 0, actual: 0, weighted: 0, credit: 0, overtime: 0 };
-  R.rows.forEach((x) => { for (const k in tot) tot[k] += x.r[k]; });
+  const sliced = R.rows.some((x) => x.slice);
+  R.rows.forEach((x) => {
+    const v = repVals(x);
+    tot.actual += v.actual; tot.weighted += v.weighted; tot.credit += v.credit;
+    if (!x.slice) { tot.duty += x.r.duty; tot.overtime += x.r.overtime; }
+  });
   const head = `<th>کد</th><th>نام</th><th>بخش</th><th>نوع خدمت</th><th>قرارداد</th><th class="n">موظفی</th><th class="n">کارکرد واقعی</th><th class="n">با ضریب</th><th class="n">اعتبار مرخصی</th><th class="n">اضافه / کسر</th>
     ${R.shiftCols.map((c) => `<th class="n">${esc(c)}</th>`).join('')}${R.spCols.map((c) => `<th class="n">${SPECIAL[c].name}</th>`).join('')}`;
-  const body = R.rows.map(({ p, r }) => `<tr><td>${esc(p.code || '—')}</td><td>${esc(pname(p))}</td><td>${dept(p.deptId) ? `<span class="dot" style="--dc:${esc(dept(p.deptId).color)}"></span>${esc(dept(p.deptId).name)}` : '—'}</td><td>${p.workType === 'office' ? '<span class="pill" style="background:#e0f2fe;color:#0369a1;border-color:#bae6fd">اداری</span>' : '<span class="pill">در گردش</span>'}</td><td>${CONTRACTS[p.contract] || ''}</td>
-    <td class="n">${hmH(r.duty)}</td><td class="n">${hmH(r.actual)}</td><td class="n">${hmH(r.weighted)}</td><td class="n">${hmH(r.credit)}</td>
-    <td class="n" style="${r.overtime < 0 ? 'color:var(--hol-ink)' : cap > 0 && r.overtime > cap ? 'color:var(--warn);font-weight:700' : ''}">${hmH(r.overtime)}</td>
-    ${R.shiftCols.map((c) => `<td class="n">${r.counts[c] ? fa(r.counts[c]) : '·'}</td>`).join('')}${R.spCols.map((c) => `<td class="n">${r.counts[c] ? fa(r.counts[c]) : '·'}</td>`).join('')}</tr>`).join('');
-  const foot = `<tr><td colspan="5">جمع</td><td class="n">${hmH(tot.duty)}</td><td class="n">${hmH(tot.actual)}</td><td class="n">${hmH(tot.weighted)}</td><td class="n">${hmH(tot.credit)}</td><td class="n">${hmH(tot.overtime)}</td><td colspan="${R.shiftCols.length + R.spCols.length}"></td></tr>`;
-  // جمع‌بندی بخش‌ها
+  const body = R.rows.map((x) => {
+    const { p } = x, v = repVals(x), duty = repDuty(x), ot = repOvertime(x);
+    const deptCell = ui.rep.dept !== 'all' && ui.rep.dept !== 'none'
+      ? ((dept(ui.rep.dept) || {}).name || '—')
+      : personDeptNames(p, x.split);
+    return `<tr><td>${esc(p.code || '—')}</td><td>${esc(pname(p))}</td><td>${esc(deptCell)}</td><td>${p.workType === 'office' ? '<span class="pill" style="background:#e0f2fe;color:#0369a1;border-color:#bae6fd">اداری</span>' : '<span class="pill">در گردش</span>'}</td><td>${CONTRACTS[p.contract] || ''}</td>
+    <td class="n">${hmOrDash(duty)}</td><td class="n">${hmH(v.actual)}</td><td class="n">${hmH(v.weighted)}</td><td class="n">${hmH(v.credit)}</td>
+    <td class="n" style="${ot != null && ot < 0 ? 'color:var(--hol-ink)' : ot != null && cap > 0 && ot > cap ? 'color:var(--warn);font-weight:700' : ''}">${hmOrDash(ot)}</td>
+    ${R.shiftCols.map((c) => `<td class="n">${v.counts[c] ? fa(v.counts[c]) : '·'}</td>`).join('')}${R.spCols.map((c) => `<td class="n">${v.counts[c] ? fa(v.counts[c]) : '·'}</td>`).join('')}</tr>`;
+  }).join('');
+  const foot = `<tr><td colspan="5">جمع</td><td class="n">${sliced ? '—' : hmH(tot.duty)}</td><td class="n">${hmH(tot.actual)}</td><td class="n">${hmH(tot.weighted)}</td><td class="n">${hmH(tot.credit)}</td><td class="n">${sliced ? '—' : hmH(tot.overtime)}</td><td colspan="${R.shiftCols.length + R.spCols.length}"></td></tr>`;
+  // جمع‌بندی بخش‌ها بر اساس بخشِ خانهٔ شیفت (نه بخشِ نفر)؛ «نفر» یعنی نفراتِ متمایزِ دارای شیفت در آن بخش
   const groups = {};
-  R.rows.forEach(({ p, r }) => {
-    const k = dept(p.deptId) ? p.deptId : '';
-    const g = (groups[k] = groups[k] || { n: 0, duty: 0, actual: 0, weighted: 0, overtime: 0, counts: {} });
-    g.n++; g.duty += r.duty; g.actual += r.actual; g.weighted += r.weighted; g.overtime += r.overtime;
-    for (const c in r.counts) g.counts[c] = (g.counts[c] || 0) + r.counts[c];
+  R.rows.forEach((x) => {
+    for (const k in x.split) {
+      const s = x.split[k];
+      const g = (groups[k] = groups[k] || { persons: new Set(), actual: 0, weighted: 0, credit: 0, counts: {} });
+      g.persons.add(x.p.id); g.actual += s.actual; g.weighted += s.weighted; g.credit += s.credit;
+      for (const c in s.counts) g.counts[c] = (g.counts[c] || 0) + s.counts[c];
+    }
   });
   const gRows = Object.keys(groups).map((k) => {
     const g = groups[k], d = dept(k);
-    return `<tr><td>${d ? `<span class="dot" style="--dc:${esc(d.color)}"></span>${esc(d.name)}` : 'بدون بخش'}</td><td class="n">${N(fa(g.n))}</td><td class="n">${hmH(g.actual)}</td><td class="n">${hmH(g.weighted)}</td><td class="n">${hmH(g.overtime)}</td>
+    return `<tr><td>${d ? `<span class="dot" style="--dc:${esc(d.color)}"></span>${esc(d.name)}` : 'بدون بخش'}</td><td class="n">${N(fa(g.persons.size))}</td><td class="n">${hmH(g.actual)}</td><td class="n">${hmH(g.weighted)}</td><td class="n">${hmH(g.credit)}</td>
       ${R.shiftCols.map((c) => `<td class="n">${g.counts[c] ? fa(g.counts[c]) : '·'}</td>`).join('')}</tr>`;
   }).join('');
   return `<div class="panel"><div class="bar">
@@ -1754,10 +1954,12 @@ function viewRep() {
       <button class="btn sm" data-act="reptoday" style="align-self:flex-end">امروز</button>
       <span class="rows" style="align-self:flex-end;gap:6px">${exportBtns('rep')}<button class="btn" data-act="repcsv">CSV</button></span></div>
     <div class="note">بازه: ${N(fmtDate(R.from))} تا ${N(fmtDate(R.to))} (${N(fa(days))} روز). موظفی هر نفر برای این بازه: ${hmH((days - Object.values(R.hm).filter(Boolean).length) * DB.cfg.settings.dutyMin)}.
+    ${sliced ? 'در نمای یک بخش، ستون‌های ساعتی فقط همان بخش را نشان می‌دهند؛ موظفی و اضافه/کسر سطحِ نفرند و خط تیره می‌شوند.' : ''}
     تاریخ را به شکل ۱۴۰۵/۰۷/۲۵ بنویسید.</div><div id="rep-msg"></div></div>
     ${R.rows.length ? `<div class="tw"><table class="t"><thead><tr>${head}</tr></thead><tbody>${body}</tbody><tfoot>${foot}</tfoot></table></div>
       <h2>برنامهٔ کلی بخش‌ها</h2>
-      <div class="tw"><table class="t"><thead><tr><th>بخش</th><th class="n">نفر</th><th class="n">کارکرد واقعی</th><th class="n">با ضریب</th><th class="n">اضافه / کسر</th>${R.shiftCols.map((c) => `<th class="n">تعداد ${esc(c)}</th>`).join('')}</tr></thead><tbody>${gRows}</tbody></table></div>`
+      <div class="tw"><table class="t"><thead><tr><th>بخش</th><th class="n">نفر</th><th class="n">کارکرد واقعی</th><th class="n">با ضریب</th><th class="n">اعتبار مرخصی</th>${R.shiftCols.map((c) => `<th class="n">تعداد ${esc(c)}</th>`).join('')}</tr></thead><tbody>${gRows}</tbody></table></div>
+      <div class="note">جمع‌بندی بخش‌ها بر اساس بخشِ هر شیفت است، نه بخشِ نفر؛ موظفی و اضافه/کسر فقط در سطح نفر معنا دارند و در این جدول نمی‌آیند.</div>`
       : '<div class="panel empty"><b>پرسنلی برای گزارش نیست</b></div>'}`;
 }
 function csvText() {
@@ -1766,9 +1968,12 @@ function csvText() {
   const h = ['کد پرسنلی', 'نام', 'بخش', 'قرارداد', 'موظفی', 'کارکرد واقعی', 'کارکرد با ضریب', 'اعتبار مرخصی', 'اضافه/کسر', 'اضافه/کسر (ساعت اعشاری)']
     .concat(R.shiftCols.map((c) => 'تعداد ' + c)).concat(R.spCols.map((c) => SPECIAL[c].name));
   const lines = [h.map(q).join(',')];
-  R.rows.forEach(({ p, r }) => {
-    lines.push([p.code || '', pname(p), (dept(p.deptId) || {}).name || '', CONTRACTS[p.contract] || '', fmtHMlatin(r.duty), fmtHMlatin(r.actual), fmtHMlatin(r.weighted), fmtHMlatin(r.credit), fmtHMlatin(r.overtime), (r.overtime / 60).toFixed(2)]
-      .concat(R.shiftCols.map((c) => r.counts[c] || 0)).concat(R.spCols.map((c) => r.counts[c] || 0)).map(q).join(','));
+  const fml = (v) => (v == null ? '' : fmtHMlatin(v));
+  R.rows.forEach((x) => {
+    const { p } = x, v = repVals(x), duty = repDuty(x), ot = repOvertime(x);
+    const deptCell = ui.rep.dept !== 'all' && ui.rep.dept !== 'none' ? ((dept(ui.rep.dept) || {}).name || '') : personDeptNames(p, x.split);
+    lines.push([p.code || '', pname(p), deptCell, CONTRACTS[p.contract] || '', fml(duty), fmtHMlatin(v.actual), fmtHMlatin(v.weighted), fmtHMlatin(v.credit), fml(ot), ot == null ? '' : (ot / 60).toFixed(2)]
+      .concat(R.shiftCols.map((c) => v.counts[c] || 0)).concat(R.spCols.map((c) => v.counts[c] || 0)).map(q).join(','));
   });
   return { name: `report-${fmtDateLatin(R.from).replace(/\//g, '')}-${fmtDateLatin(R.to).replace(/\//g, '')}.csv`, text: '﻿' + lines.join('\r\n') };
 }
@@ -1782,12 +1987,16 @@ function xlsxReport() {
     .concat(R.shiftCols.map((c) => 'تعداد ' + c)).concat(R.spCols.map((c) => SPECIAL[c].name)).map((t) => hd(t));
   const rows = [head];
   const tot = [0, 0, 0, 0, 0];
-  R.rows.forEach(({ p, r }) => {
-    const v = [r.duty, r.actual, r.weighted, r.credit, r.overtime]; v.forEach((x, i) => { tot[i] += x; });
-    rows.push([p.code || '', pname(p), (dept(p.deptId) || {}).name || '', CONTRACTS[p.contract] || ''].concat(v.map(hrs))
-      .concat(R.shiftCols.map((c) => ({ v: r.counts[c] || 0, s: 3 }))).concat(R.spCols.map((c) => ({ v: r.counts[c] || 0, s: 3 }))));
+  const sliced = R.rows.some((x) => x.slice);
+  R.rows.forEach((x) => {
+    const { p } = x, v = repVals(x), duty = repDuty(x), ot = repOvertime(x);
+    const deptCell = ui.rep.dept !== 'all' && ui.rep.dept !== 'none' ? ((dept(ui.rep.dept) || {}).name || '') : personDeptNames(p, x.split);
+    const vals = [duty, v.actual, v.weighted, v.credit, ot];
+    vals.forEach((val, i) => { if (val != null) tot[i] += val; });
+    rows.push([p.code || '', pname(p), deptCell, CONTRACTS[p.contract] || ''].concat(vals.map((val) => (val == null ? '' : hrs(val))))
+      .concat(R.shiftCols.map((c) => ({ v: v.counts[c] || 0, s: 3 }))).concat(R.spCols.map((c) => ({ v: v.counts[c] || 0, s: 3 }))));
   });
-  rows.push([hd('جمع', 6), '', '', ''].concat(tot.map((x) => ({ v: hrs(x), s: 6 }))));
+  rows.push([hd('جمع', 6), '', '', ''].concat(tot.map((x, i) => ({ v: sliced && (i === 0 || i === 4) ? '' : hrs(x), s: 6 }))));
   const sheets = [{ name: 'گزارش', rows, widths: [12, 22, 16, 11, 13, 15, 13, 15, 14].concat(R.shiftCols.concat(R.spCols).map(() => 10)), freeze: { rows: 1, cols: 2 } }];
   sheets.push({ name: 'راهنما', rows: [[hd('بازه')], [`${fmtDateLatin(R.from)} تا ${fmtDateLatin(R.to)}`], [''], [hd('توضیح')], ['ستون‌های زمانی بر حسب ساعت اعشاری‌اند (۷:۲۰ = ۷٫۳۳). «با ضریب» شامل ضریب تعطیلی قراردادها است.']], widths: [70], freeze: { rows: 0, cols: 0 } });
   return { name: `report-${fmtDateLatin(R.from).replace(/\//g, '')}-${fmtDateLatin(R.to).replace(/\//g, '')}.xlsx`, data: Exporter.xlsx(sheets) };
@@ -1803,7 +2012,8 @@ function xlsxRoster() {
   const rows = [head];
   for (const p of ps) {
     const mine = DB.assign[p.id] || {}, r = computeRange(dbv(), p, a, b, hm);
-    const row = [p.code || '', pname(p), (dept(p.deptId) || {}).name || ''];
+    const split = Core.computeDeptSplit(dbv(), p, a, b, hm);
+    const row = [p.code || '', pname(p), personDeptNames(p, split)];
     for (let i = 0; i < len; i++) {
       const c = mine[a + i];
       row.push({ v: c ? (SPECIAL[c] ? SPECIAL[c].short : c) : '', s: hm[a + i] ? 5 : 3 });
@@ -1950,7 +2160,7 @@ async function autoRun() {
   if ($('#auto-prefs')) autoState.usePrefs = $('#auto-prefs').checked;
   let prefs, wishes;
   if (isServer() && autoState.usePrefs) { await loadPrefs(); prefs = prefsState.prefs; wishes = prefsState.wishes; }
-  autoState.result = Core.suggestSchedule(dbv(), { people: visiblePeople().map((p) => p.id), a, b, need: autoState.need, maxConsec: autoState.maxConsec, capMin: Math.round(autoState.capH * 60), prefs, wishes });
+  autoState.result = Core.suggestSchedule(dbv(), { people: visiblePeople().map((p) => p.id), a, b, need: autoState.need, maxConsec: autoState.maxConsec, capMin: Math.round(autoState.capH * 60), prefs, wishes, dept: (ui.dept !== 'all' && ui.dept !== 'none') ? ui.dept : undefined });
   if (!autoState.result.changes.length && !autoState.result.unfilled.length) autoState.msg = 'نیازی تعریف نشده یا همهٔ خانه‌ها پر است.';
 }
 
@@ -2170,7 +2380,7 @@ function sessionLost() {
   if (!ME.user) return;
   ME.user = null;
   clearInterval(Store.pollTimer);
-  Store.pending = new Map(); Store.loaded = new Set(); DB.assign = {}; DB.cfg = defaultCfg();
+  Store.pending = new Map(); Store.loaded = new Set(); DB.assign = {}; DB.assignDept = {}; DB.cfg = defaultCfg();
   loginMsg = 'نشست شما تمام شد. دوباره وارد شوید.';
   render();
 }
@@ -2244,11 +2454,14 @@ async function saveFile(filename, data, label) {
 let painting = false, stroke = null, strokeFirst = true;
 function applyBrush(td) {
   const pid = td.dataset.pid, j = +td.dataset.j;
+  const p = person(pid); if (!p) return;
   const old = (DB.assign[pid] || {})[j];
+  // خانهٔ قفل (بخش دیگر در نمای یک بخش) نقاشی نمی‌شود
+  if (ui.tab === 'sched' && ui.dept !== 'all' && ui.dept !== 'none' && old && cellDept(pid, j) !== ui.dept) return;
   let nw = ui.brush === 'ERASE' ? undefined : ui.brush;
   if (strokeFirst && old === nw) nw = undefined; // کلیک دوباره = پاک کردن
   strokeFirst = false;
-  if (setAssign(pid, j, nw, stroke)) { if (ui.tab === 'pcal') refreshPcal(); else refreshRow(pid); }
+  if (setAssign(pid, j, nw, stroke, nw ? paintDeptFor(p) : null)) { if (ui.tab === 'pcal') refreshPcal(); else refreshRow(pid); }
 }
 document.addEventListener('pointerdown', (e) => {
   if (e.button > 0 || !canEdit() || !ui.editMode) return;
@@ -2302,7 +2515,7 @@ async function copyPattern(src) {
       else from = j - +src;
       if (from == null) continue;
       const code = (DB.assign[p.id] || {})[from];
-      if (code) setAssign(p.id, j, code, st);
+      if (code) setAssign(p.id, j, code, st, cellDept(p.id, from));
     }
   }
   finishStroke(st, 'کپی الگو');
@@ -2337,7 +2550,7 @@ document.addEventListener('click', async (e) => {
     case 'undo': {
       const st = ui.undo.pop(); if (!st) return;
       const pids = new Set();
-      for (let i = st.length - 1; i >= 0; i--) { setAssign(st[i].pid, st[i].j, st[i].old); pids.add(st[i].pid); }
+      for (let i = st.length - 1; i >= 0; i--) { setAssign(st[i].pid, st[i].j, st[i].old, null, st[i].oldDept || null); pids.add(st[i].pid); }
       logEv(`بازگردانی ${fa(st.length)} خانه`);
       return render();
     }
@@ -2348,7 +2561,7 @@ document.addEventListener('click', async (e) => {
       finishStroke(st, 'پاک‌کردن ماه'); return render();
     }
     case 'clearsample': {
-      await Store.replaceAll(Object.assign(normalizeCfg(cfg), { people: [], depts: [], sample: false }), {}, []);
+      await Store.replaceAll(Object.assign(normalizeCfg(cfg), { people: [], depts: [], sample: false }), {}, {}, []);
       ui.undo = []; return render();
     }
     /* پرسنل */
@@ -2358,14 +2571,20 @@ document.addEventListener('click', async (e) => {
       const mine = DB.assign[id] || {}; const p = person(id);
       cfg.people = cfg.people.filter((x) => x.id !== id);
       Object.keys(mine).forEach((j) => Store.touchMonth(+j));
-      delete DB.assign[id];
+      delete DB.assign[id]; delete DB.assignDept[id];
       Store.touchCfg(); logEv(`حذف پرسنل: ${p ? pname(p) : ''}`); return render();
     }
     /* بخش‌ها */
     case 'deldept': {
       const d = dept(id); cfg.depts = cfg.depts.filter((x) => x.id !== id);
-      cfg.people.forEach((p) => { if (p.deptId === id) p.deptId = ''; });
+      cfg.people.forEach((p) => {
+        if (p.deptId === id) p.deptId = '';
+        p.extraDeptIds = (p.extraDeptIds || []).filter((x) => x !== id);
+      });
+      // خانه‌های این بخش به بخش اصلی نفر برمی‌گردند (حذف ورودی صریح = بخش اصلی)
+      for (const pid in DB.assignDept) for (const j in DB.assignDept[pid]) if (DB.assignDept[pid][j] === id) delete DB.assignDept[pid][j];
       if (ui.dept === id) ui.dept = 'all';
+      if (ui.paintDept === id) ui.paintDept = '';
       Store.touchCfg(); logEv(`حذف بخش: ${d ? d.name : ''}`); return render();
     }
     /* الگوهای شیفت اداری و زیرتب‌ها */
@@ -2476,7 +2695,7 @@ document.addEventListener('click', async (e) => {
     case 'autorun': await autoRun(); return render();
     case 'autoapply': {
       const R = autoState.result; if (!R || !R.changes.length) return;
-      const st = []; for (const c of R.changes) setAssign(c.pid, c.j, c.code, st);
+      const st = []; for (const c of R.changes) setAssign(c.pid, c.j, c.code, st, c.deptId);
       finishStroke(st, 'پیشنهاد خودکار'); autoState.result = null; autoState.msg = `${fa(st.length)} خانه به برنامه اضافه شد.`;
       return render();
     }
@@ -2485,7 +2704,7 @@ document.addEventListener('click', async (e) => {
     case 'logout': {
       try { await Store.api('POST', '/api/logout'); } catch (e) { /* حتی با خطا از برنامه خارج می‌شویم */ }
       ME.user = null; clearInterval(Store.pollTimer);
-      Store.pending = new Map(); Store.loaded = new Set(); DB.assign = {}; DB.cfg = defaultCfg();
+      Store.pending = new Map(); Store.loaded = new Set(); DB.assign = {}; DB.assignDept = {}; DB.cfg = defaultCfg();
       ui.undo = []; usersState.list = []; usersState.edit = null; usersState.notice = ''; loginMsg = '';
       return render();
     }
@@ -2533,12 +2752,12 @@ document.addEventListener('click', async (e) => {
     /* تنظیمات */
     case 'backup': {
       await Store.loadAll();
-      const data = JSON.stringify({ app: 'shiftyar', v: 1, cfg: DB.cfg, assign: DB.assign, log: DB.log });
+      const data = JSON.stringify({ app: 'shiftyar', v: 1, cfg: DB.cfg, assign: DB.assign, assignDept: DB.assignDept, log: DB.log });
       const ok = await saveFile('shiftyar-backup-' + fmtDateLatin(todayJdn()).replace(/\//g, '') + '.json', data, 'متن پشتیبان');
       if (ok) flash('فایل پشتیبان ذخیره شد.', true, '#set-msg'); return;
     }
     case 'resetall': {
-      await Store.replaceAll(defaultCfg(), {}, []); ui.undo = []; ui.editPerson = null; ui.dept = 'all'; return render();
+      await Store.replaceAll(defaultCfg(), {}, {}, []); ui.undo = []; ui.editPerson = null; ui.dept = 'all'; return render();
     }
   }
 });
@@ -2548,13 +2767,15 @@ document.addEventListener('submit', (e) => {
   e.preventDefault();
   const f = e.target, fd = new FormData(f), cfg = DB.cfg;
   if (f.id === 'f-person') {
+    const mainDept = fd.get('deptId') || '';
     const rec = {
       first: (fd.get('first') || '').trim(),
       last: (fd.get('last') || '').trim(),
       code: toLatin((fd.get('code') || '').trim()),
       phone: toLatin((fd.get('phone') || '').trim()),
       contract: fd.get('contract'),
-      deptId: fd.get('deptId') || '',
+      deptId: mainDept,
+      extraDeptIds: fd.getAll('extraDept').filter((d) => d && d !== mainDept),
       workType: fd.get('workType') || 'rotating',
       officePatternId: fd.get('officePatternId') || '',
     };
@@ -2600,7 +2821,8 @@ document.addEventListener('submit', (e) => {
 /* ---------- تغییر فیلدها ---------- */
 document.addEventListener('change', async (e) => {
   const t = e.target, cfg = DB.cfg;
-  if (t.id === 'f-dept') { ui.dept = t.value; return render(); }
+  if (t.id === 'f-dept') { ui.dept = t.value; ui.paintDept = (t.value !== 'all' && t.value !== 'none') ? t.value : ''; return render(); }
+  if (t.id === 'paint-dept' || t.id === 'paint-dept-pcal') { ui.paintDept = t.value; return; }
   if (t.id === 'p-work-type') {
     const patWrap = $('#f-off-pat');
     if (patWrap) patWrap.style.display = t.value === 'office' ? '' : 'none';
@@ -2651,7 +2873,7 @@ document.addEventListener('change', async (e) => {
     try {
       const o = JSON.parse(await t.files[0].text());
       if (!o || o.app !== 'shiftyar' || !o.cfg) throw new Error('فایل پشتیبان شیفت‌یار نیست.');
-      await Store.replaceAll(normalizeCfg(o.cfg), o.assign || {}, o.log || []);
+      await Store.replaceAll(normalizeCfg(o.cfg), o.assign || {}, o.assignDept || {}, o.log || []);
       ui.undo = []; ui.editPerson = null; await render(); flash('اطلاعات بازیابی شد.', true);
     } catch (err) { flash('بازیابی نشد: ' + err.message, false, '#set-msg'); }
   }

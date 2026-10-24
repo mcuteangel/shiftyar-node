@@ -256,4 +256,56 @@ t('پرسنل اداری: محاسبه موظفی پویا و انتساب خو�
   assert.strictEqual(r2.overtime, 0);
 });
 
+/* ---------- Issue #19: چندبخشی ---------- */
+t('تفکیک بخش‌ها: ساعت هر بخش از بخشِ خانه می‌آید و جمعِ کل عوض نمی‌شود', () => {
+  const a = C.j2d(1405, 8, 1);
+  // سه روز کاریِ غیرتعطیل پیدا کن (نه جمعه، نه تعطیل رسمی)
+  const workdays = [];
+  for (let j = a; workdays.length < 3; j++) {
+    const info = C.holidayInfo(C.defaultSettings(), C.defaultHolidays(), j);
+    if (!info) workdays.push(j);
+  }
+  const [d1, d2, d3] = workdays;
+  const p = { id: 'p', contract: 'company', deptId: 'd1', extraDeptIds: ['d2'] };
+  const db = {
+    settings: C.defaultSettings(), holidays: C.defaultHolidays(), shifts: C.defaultShifts(),
+    people: [p],
+    assign: { p: { [d1]: 'M', [d2]: 'M', [d3]: 'LV' } },
+    assignDept: { p: { [d2]: 'd2', [d3]: 'd2' } }, // d1 صریح ندارد = بخش اصلی
+  };
+  const split = C.computeDeptSplit(db, p, a, a + 29);
+  assert.strictEqual(split.d1.actual, 390, 'M در بخش اصلی: ۶:۳۰');
+  assert.strictEqual(split.d2.actual, 390, 'M در بخش فرعی: ۶:۳۰');
+  assert.strictEqual(split.d2.credit, 440, 'مرخصی در بخش فرعی به همان بخش اعتبار می‌دهد');
+  assert.strictEqual(split.d2.counts.M, 1);
+  assert.strictEqual(split.d2.counts.LV, 1);
+  const total = C.computeRange(db, p, a, a + 29);
+  const sumActual = Object.values(split).reduce((s, x) => s + x.actual, 0);
+  const sumWeighted = Object.values(split).reduce((s, x) => s + x.weighted, 0);
+  const sumCredit = Object.values(split).reduce((s, x) => s + x.credit, 0);
+  assert.strictEqual(sumActual, total.actual, 'جمعِ کارکردِ بخش‌ها = کارکرد کل');
+  assert.strictEqual(sumWeighted, total.weighted);
+  assert.strictEqual(sumCredit, total.credit);
+});
+t('تفکیک بخش‌ها: خانهٔ قدیمیِ بدون بخش، بخش اصلی حساب می‌شود', () => {
+  const a = C.j2d(1405, 8, 1);
+  const p = { id: 'p', contract: 'official', deptId: 'd1', extraDeptIds: ['d2'] };
+  const db = {
+    settings: C.defaultSettings(), holidays: C.defaultHolidays(), shifts: C.defaultShifts(),
+    people: [p], assign: { p: { [a]: 'M' } }, assignDept: {},
+  };
+  const split = C.computeDeptSplit(db, p, a, a + 29);
+  assert.deepStrictEqual(Object.keys(split), ['d1']);
+  assert.strictEqual(split.d1.actual, 390);
+});
+t('پیشنهاد خودکار با بخش مشخص: خانه‌های ساخته‌شده همان بخش را می‌گیرند', () => {
+  const db = mkDb(2);
+  const a = C.j2d(1405, 8, 1);
+  const r = C.suggestSchedule(db, { people: ['p0', 'p1'], a, b: a + 3, need: { M: 1 }, maxConsec: 6, capMin: 100 * 60, dept: 'd2' });
+  assert.ok(r.changes.length > 0);
+  assert.ok(r.changes.every((c) => c.deptId === 'd2'), JSON.stringify(r.changes.slice(0, 3)));
+  const r2 = C.suggestSchedule(db, { people: ['p0', 'p1'], a, b: a + 3, need: { M: 1 }, maxConsec: 6, capMin: 100 * 60 });
+  assert.ok(r2.changes.every((c) => c.deptId === undefined), 'بدون بخش، برچسبی اضافه نمی‌شود');
+});
+
 console.log(results.join('\n'));

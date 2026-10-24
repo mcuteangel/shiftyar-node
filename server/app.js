@@ -56,6 +56,20 @@ function createApp(opts = {}) {
   const q = (sql) => db.prepare(sql);
   const placeholders = (n) => Array(n).fill('?').join(',');
   const persName = (p) => `${p.first || ''} ${p.last || ''}`.trim() || 'بدون نام';
+  /** بخش‌های یک نفر (اصلی + فرعی)؛ هم ردیف دیتابیس (dept_id/extra_depts) و هم شیء پیکربندی (deptId/extraDeptIds) را می‌فهمد */
+  const parseExtraDepts = (v) => {
+    if (Array.isArray(v)) return v.filter((x) => typeof x === 'string' && x);
+    if (typeof v === 'string') { try { const a = JSON.parse(v); return Array.isArray(a) ? a.filter((x) => typeof x === 'string' && x) : []; } catch (_) { return []; } }
+    return [];
+  };
+  const deptsOf = (x) => {
+    if (!x) return [];
+    const out = [];
+    const main = x.dept_id !== undefined ? (x.dept_id || '') : (x.deptId || '');
+    if (main) out.push(main);
+    for (const d of parseExtraDepts(x.extra_depts !== undefined ? x.extra_depts : x.extraDeptIds)) if (!out.includes(d)) out.push(d);
+    return out;
+  };
   const codeLabel = (c) => (!c ? 'خالی' : Core.SPECIAL[c] ? Core.SPECIAL[c].name : c);
   const toLatin = (s) => Core.toLatin(String(s == null ? '' : s));
 
@@ -84,12 +98,17 @@ function createApp(opts = {}) {
       active: !!row.active, mustChange: !!row.must_change, deptIds,
     };
   }
-  /** شناسهٔ پرسنلی که کاربر می‌تواند ببیند / ویرایش کند؛ null یعنی همه */
+  /** شناسهٔ پرسنلی که کاربر می‌تواند ببیند / ویرایش کند؛ null یعنی همه.
+   * مدیر بخش، فردی را می‌بیند که بخش اصلی یا یکی از بخش‌های فرعی‌اش در بخش‌های مدیر باشد.
+   * توجه: write اینجا فقط عضویت در سطح نفر است؛ writeAssign برای هر خانه، بخشِ خانه را هم جداگانه بررسی می‌کند. */
   function scope(user) {
     if (user.role === 'admin') return { read: null, write: null };
     const mine = new Set();
     if (user.role === 'manager' && user.deptIds.length) {
-      for (const r of q(`SELECT id FROM people WHERE dept_id IN (${placeholders(user.deptIds.length)})`).all(...user.deptIds)) mine.add(r.id);
+      const wanted = new Set(user.deptIds);
+      for (const r of q('SELECT id, dept_id, extra_depts FROM people').all()) {
+        if (deptsOf(r).some((d) => wanted.has(d))) mine.add(r.id);
+      }
     }
     const write = user.role === 'manager' ? new Set(mine) : new Set();
     if (user.personId) mine.add(user.personId);
@@ -152,11 +171,12 @@ function createApp(opts = {}) {
   function loadConfig(user) {
     const sc = scope(user);
     let depts = q('SELECT id, name, color FROM depts ORDER BY pos, name').all().map((d) => ({ id: d.id, name: d.name, color: d.color }));
-    let people = q('SELECT id, first, last, code, phone, contract, dept_id, work_type, office_pattern_id FROM people ORDER BY pos, last, first').all()
-      .map((p) => ({ id: p.id, first: p.first, last: p.last, code: p.code, phone: p.phone, contract: p.contract, deptId: p.dept_id || '', workType: p.work_type || 'rotating', officePatternId: p.office_pattern_id || '' }));
+    let people = q('SELECT id, first, last, code, phone, contract, dept_id, extra_depts, work_type, office_pattern_id FROM people ORDER BY pos, last, first').all()
+      .map((p) => ({ id: p.id, first: p.first, last: p.last, code: p.code, phone: p.phone, contract: p.contract, deptId: p.dept_id || '', extraDeptIds: parseExtraDepts(p.extra_depts), workType: p.work_type || 'rotating', officePatternId: p.office_pattern_id || '' }));
     if (user.role !== 'admin') {
       people = people.filter((p) => sc.read.has(p.id));
-      const keep = new Set(people.map((p) => p.deptId).filter(Boolean));
+      const keep = new Set();
+      for (const p of people) for (const d of deptsOf(p)) keep.add(d);
       for (const id of user.deptIds) keep.add(id);
       depts = depts.filter((d) => keep.has(d.id));
     }
@@ -198,9 +218,17 @@ function createApp(opts = {}) {
       if (!Core.CONTRACTS[p.contract]) throw bad('نوع قرارداد نامعتبر است.');
       const deptId = p.deptId || '';
       if (deptId && !deptIds.has(deptId)) throw bad('بخش انتخاب‌شده وجود ندارد.');
+      // بخش‌های فرعی: فقط بخش‌های موجود، بدون تکرار و بدون تکرارِ بخش اصلی
+      if (p.extraDeptIds !== undefined && !Array.isArray(p.extraDeptIds)) throw bad('فهرست بخش‌های فرعی نامعتبر است.');
+      const extraDeptIds = [];
+      for (const d of (p.extraDeptIds || [])) {
+        if (typeof d !== 'string' || !deptIds.has(d)) throw bad('بخش فرعی انتخاب‌شده وجود ندارد.');
+        if (d === deptId || extraDeptIds.includes(d)) throw bad('بخش فرعی تکراری یا برابر با بخش اصلی است.');
+        extraDeptIds.push(d);
+      }
       const workType = p.workType === 'office' ? 'office' : 'rotating';
       const officePatternId = str(p.officePatternId, 40, 'الگوی اداری') || '';
-      return { id: p.id, first, last, code, phone: toLatin(str(p.phone, 30, 'شمارهٔ تماس')), contract: p.contract, deptId, workType, officePatternId };
+      return { id: p.id, first, last, code, phone: toLatin(str(p.phone, 30, 'شمارهٔ تماس')), contract: p.contract, deptId, extraDeptIds, workType, officePatternId };
     });
     // شیفت‌ها
     if (!Array.isArray(c.shifts) || !c.shifts.length || c.shifts.length > 60) throw bad('فهرست شیفت‌ها نامعتبر است.');
@@ -284,8 +312,8 @@ function createApp(opts = {}) {
       const newIds = new Set(c.people.map((p) => p.id));
       for (const [id] of existing) if (!newIds.has(id)) q('DELETE FROM people WHERE id = ?').run(id);
       q("UPDATE people SET code = ''").run();
-      const pIns = q('INSERT INTO people(id, first, last, code, phone, contract, dept_id, work_type, office_pattern_id, pos) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET first = excluded.first, last = excluded.last, code = excluded.code, phone = excluded.phone, contract = excluded.contract, dept_id = excluded.dept_id, work_type = excluded.work_type, office_pattern_id = excluded.office_pattern_id, pos = excluded.pos');
-      c.people.forEach((p, i) => pIns.run(p.id, p.first, p.last, p.code, p.phone, p.contract, p.deptId || null, p.workType || 'rotating', p.officePatternId || null, i));
+      const pIns = q('INSERT INTO people(id, first, last, code, phone, contract, dept_id, extra_depts, work_type, office_pattern_id, pos) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET first = excluded.first, last = excluded.last, code = excluded.code, phone = excluded.phone, contract = excluded.contract, dept_id = excluded.dept_id, extra_depts = excluded.extra_depts, work_type = excluded.work_type, office_pattern_id = excluded.office_pattern_id, pos = excluded.pos');
+      c.people.forEach((p, i) => pIns.run(p.id, p.first, p.last, p.code, p.phone, p.contract, p.deptId || null, JSON.stringify(p.extraDeptIds || []), p.workType || 'rotating', p.officePatternId || null, i));
       const keepD = new Set(c.depts.map((d) => d.id));
       for (const r of q('SELECT id FROM depts').all()) if (!keepD.has(r.id)) q('DELETE FROM depts WHERE id = ?').run(r.id);
       // شیفت‌ها و تعطیلات
@@ -306,42 +334,72 @@ function createApp(opts = {}) {
   }
 
   /* ---------- برنامه‌ها ---------- */
+  /** بخشِ مؤثر یک خانه: بخشِ صریحِ خانه، وگرنه بخش اصلی نفر (خانه‌های قدیمی) */
+  const effectiveCellDept = (person, row) => (row && row.dept_id) || (person && (person.dept_id || '')) || '';
   function readAssign(user, a, b) {
     const sc = scope(user);
-    const out = {};
-    for (const r of q('SELECT person_id, day, code FROM assign WHERE day BETWEEN ? AND ?').all(a, b)) {
+    const out = {}, outDept = {};
+    const people = new Map(q('SELECT id, dept_id, extra_depts FROM people').all().map((r) => [r.id, r]));
+    for (const r of q('SELECT person_id, day, code, dept_id FROM assign WHERE day BETWEEN ? AND ?').all(a, b)) {
       if (sc.read && !sc.read.has(r.person_id)) continue;
+      // مدیر بخش، فقط خانه‌های بخش‌های خودش را می‌بیند (نه خانه‌های بخش دیگرِ همان فرد)
+      if (user.role === 'manager' && !user.deptIds.includes(effectiveCellDept(people.get(r.person_id), r))) continue;
       (out[r.person_id] = out[r.person_id] || {})[r.day] = r.code;
+      if (r.dept_id) (outDept[r.person_id] = outDept[r.person_id] || {})[r.day] = r.dept_id;
     }
-    return out;
+    return { assign: out, assignDept: outDept };
   }
   function writeAssign(user, changes) {
     if (!Array.isArray(changes) || !changes.length) throw bad('تغییری ارسال نشده است.');
     if (changes.length > 3000) throw bad('تعداد تغییرها بیش از حد است.');
     const sc = scope(user);
     const codes = new Set(q('SELECT code FROM shifts').all().map((r) => r.code));
+    const deptSet = new Set(q('SELECT id FROM depts').all().map((r) => r.id));
     const people = new Map();
     for (const ch of changes) {
       if (!ch || typeof ch.pid !== 'string' || !ID_RE.test(ch.pid)) throw bad('شناسهٔ پرسنل نامعتبر است.');
       intIn(ch.j, DAY_MIN, DAY_MAX, 'تاریخ');
       if (ch.code !== null && (typeof ch.code !== 'string' || !(codes.has(ch.code) || Core.SPECIAL[ch.code]))) throw bad('کد شیفت نامعتبر است.');
       if (!people.has(ch.pid)) {
-        const p = q('SELECT id, first, last FROM people WHERE id = ?').get(ch.pid);
+        const p = q('SELECT id, first, last, dept_id, extra_depts FROM people WHERE id = ?').get(ch.pid);
         if (!p) throw bad('پرسنل پیدا نشد.');
         people.set(ch.pid, p);
       }
-      if (sc.write && !sc.write.has(ch.pid)) throw new HttpError(403, 'اجازهٔ تغییر برنامهٔ این فرد را ندارید.');
+      const person = people.get(ch.pid);
+      const personDepts = deptsOf(person);
+      const old = q('SELECT code, dept_id FROM assign WHERE person_id = ? AND day = ?').get(ch.pid, ch.j);
+      const oldDept = effectiveCellDept(person, old);
+      // بخشِ خانه پس از تغییر: deptId صریح (null یعنی بخش اصلی)، وگرنه بخشِ فعلی خانه
+      const newDept = ch.code === null ? oldDept : (ch.deptId !== undefined ? (ch.deptId || person.dept_id || '') : oldDept);
+      if (ch.deptId !== undefined && ch.deptId !== null && ch.deptId !== '') {
+        if (!deptSet.has(ch.deptId)) throw bad('بخش انتخاب‌شده وجود ندارد.');
+        if (!personDepts.includes(ch.deptId)) throw bad('بخش انتخاب‌شده برای این فرد نیست.');
+      }
+      if (sc.write) {
+        if (!sc.write.has(ch.pid)) throw new HttpError(403, 'اجازهٔ تغییر برنامهٔ این فرد را ندارید.');
+        // سطح خانه: مدیر فقط خانه‌های بخش‌های خودش را می‌نویسد؛ جابه‌جاییِ بخشِ یک خانه
+        // از بخشی که مدیرش نیست هم ممنوع است (هر دو سر باید در بخش‌های مدیر باشد)
+        if (!user.deptIds.includes(newDept) || (ch.deptId !== undefined && ch.code !== null && oldDept !== newDept && old && !user.deptIds.includes(oldDept))) {
+          throw new HttpError(403, 'اجازهٔ تغییر برنامهٔ این بخش را ندارید.');
+        }
+      }
+      // ذخیرهٔ تنک: بخش اصلی به‌صورت NULL ذخیره می‌شود تا خانه‌های قدیمی و
+      // خانه‌های بخش اصلی یکسان باشند (NULL یعنی «بخش اصلی نفر»)
+      const mainDept = person.dept_id || '';
+      ch._newDeptId = (ch.code === null || !newDept || newDept === mainDept) ? null : newDept;
+      ch._oldDept = oldDept;
     }
     return DBM.tx(db, () => {
-      const get = q('SELECT code FROM assign WHERE person_id = ? AND day = ?');
-      const up = q('INSERT INTO assign(person_id, day, code) VALUES(?, ?, ?) ON CONFLICT(person_id, day) DO UPDATE SET code = excluded.code');
+      const get = q('SELECT code, dept_id FROM assign WHERE person_id = ? AND day = ?');
+      const up = q('INSERT INTO assign(person_id, day, code, dept_id) VALUES(?, ?, ?, ?) ON CONFLICT(person_id, day) DO UPDATE SET code = excluded.code, dept_id = excluded.dept_id');
       const del = q('DELETE FROM assign WHERE person_id = ? AND day = ?');
       const done = [];
       for (const ch of changes) {
         const old = get.get(ch.pid, ch.j);
         const oldCode = old ? old.code : null;
-        if (oldCode === ch.code) continue;
-        if (ch.code) up.run(ch.pid, ch.j, ch.code); else del.run(ch.pid, ch.j);
+        const oldDeptId = old ? (old.dept_id || null) : null;
+        if (oldCode === ch.code && oldDeptId === ch._newDeptId) continue;
+        if (ch.code) up.run(ch.pid, ch.j, ch.code, ch._newDeptId); else del.run(ch.pid, ch.j);
         done.push({ pid: ch.pid, j: ch.j, old: oldCode, nw: ch.code });
       }
       if (!done.length) return { rev: DBM.getMeta(db, 'assign_rev', 1), applied: 0 };
@@ -460,16 +518,27 @@ function createApp(opts = {}) {
     const a = parseInt(ctx.url.searchParams.get('from'), 10), b = parseInt(ctx.url.searchParams.get('to'), 10);
     intIn(a, DAY_MIN, DAY_MAX, 'تاریخ شروع'); intIn(b, DAY_MIN, DAY_MAX, 'تاریخ پایان');
     if (b < a || b - a > 400) throw bad('بازهٔ تاریخ نامعتبر است.');
-    return { rev: DBM.getMeta(db, 'assign_rev', 1), assign: readAssign(ctx.user, a, b) };
+    const ra = readAssign(ctx.user, a, b);
+    return { rev: DBM.getMeta(db, 'assign_rev', 1), assign: ra.assign, assignDept: ra.assignDept };
   });
   route('POST', '/api/assign', 'manager', (ctx) => writeAssign(ctx.user, ctx.body.changes));
 
   /* ---------- درخواست‌ها: مرخصی و جابه‌جایی شیفت ---------- */
   const LEAVE_CODES = ['LV', 'LU', 'SK'];
   const OPEN = ['pending', 'peer', 'manager'];
-  const personRow = (id) => q('SELECT id, first, last, dept_id FROM people WHERE id = ?').get(id);
+  const personRow = (id) => {
+    const r = q('SELECT id, first, last, dept_id, extra_depts FROM people WHERE id = ?').get(id);
+    return r ? Object.assign(r, { extraDeptIds: parseExtraDepts(r.extra_depts) }) : r;
+  };
   const touchReq = () => DBM.bumpMeta(db, 'req_rev');
   const assignCode = (pid, d) => { const r = q('SELECT code FROM assign WHERE person_id = ? AND day = ?').get(pid, d); return r ? r.code : null; };
+  /** بخشِ مؤثر خانهٔ یک فرد در یک روز (بخشِ صریحِ خانه، وگرنه بخش اصلی) */
+  const assignDeptOf = (pid, d) => {
+    const p = personRow(pid);
+    if (!p) return '';
+    const r = q('SELECT dept_id FROM assign WHERE person_id = ? AND day = ?').get(pid, d);
+    return (r && r.dept_id) || p.dept_id || '';
+  };
 
   /** مدیر سیستم همه؛ مدیر بخش فقط افراد بخش‌های خودش و نه درخواست خودش */
   function canApprove(user, r) {
@@ -526,26 +595,51 @@ function createApp(opts = {}) {
     const aC = assignCode(aId, d1), bC = assignCode(bId, d2);
     if (!isWork(aC)) throw bad(`${aName} در ${Core.fmtDate(d1)} شیفت کاری ندارد.`);
     if (!isWork(bC)) throw bad(`${bName} در ${Core.fmtDate(d2)} شیفت کاری ندارد.`);
+    // صلاحیت جابه‌جایی بر اساس بخشِ خانه‌هاست، نه بخش اصلی: هرکس باید عضوِ
+    // بخشِ شیفتی باشد که قرار است بگیرد (بخش اصلی یا فرعی)
+    const aDept = assignDeptOf(aId, d1), bDept = assignDeptOf(bId, d2);
+    if (!deptsOf(B).includes(aDept) || !deptsOf(A).includes(bDept)) throw bad('جابه‌جایی فقط با همکارِ هم‌بخش ممکن است.');
     if (d1 === d2) {
       if (aC === bC) throw bad('هر دو شیفت یکسان‌اند و جابه‌جایی لازم نیست.');
-      return [[aId, d1, bC], [bId, d1, aC]];
+      // بخش با شیفت جابه‌جا می‌شود: هر خانه بخشِ شیفتِ گرفته‌شده را می‌گیرد
+      return [[aId, d1, bC, bDept], [bId, d1, aC, aDept]];
     }
     if (!free(assignCode(aId, d2))) throw bad(`${aName} در ${Core.fmtDate(d2)} خودش شیفت یا مرخصی دارد.`);
     if (!free(assignCode(bId, d1))) throw bad(`${bName} در ${Core.fmtDate(d1)} خودش شیفت یا مرخصی دارد.`);
-    return [[aId, d1, null], [bId, d1, aC], [bId, d2, null], [aId, d2, bC]];
+    return [[aId, d1, null], [bId, d1, aC, aDept], [bId, d2, null], [aId, d2, bC, bDept]];
   }
   function applyWrites(writes) {
-    const up = q('INSERT INTO assign(person_id, day, code) VALUES(?, ?, ?) ON CONFLICT(person_id, day) DO UPDATE SET code = excluded.code');
+    const up = q('INSERT INTO assign(person_id, day, code, dept_id) VALUES(?, ?, ?, ?) ON CONFLICT(person_id, day) DO UPDATE SET code = excluded.code, dept_id = excluded.dept_id');
     const del = q('DELETE FROM assign WHERE person_id = ? AND day = ?');
-    for (const [pid, d, code] of writes) { if (code) up.run(pid, d, code); else del.run(pid, d); }
+    for (const w of writes) {
+      const [pid, d, code] = w;
+      if (!code) { del.run(pid, d); continue; }
+      // بخشِ صریح (جابه‌جایی) وگرنه بخشِ خانهٔ قبلی همان روز (مرخصی)، وگرنه بخش اصلی (NULL)
+      let deptId = w.length > 3 ? w[3] : null;
+      if (deptId === undefined) {
+        const old = q('SELECT dept_id FROM assign WHERE person_id = ? AND day = ?').get(pid, d);
+        deptId = old ? old.dept_id : null;
+      }
+      // ذخیرهٔ تنک: بخشِ برابر با بخش اصلیِ گیرنده هم NULL می‌شود
+      if (deptId) {
+        const prow = q('SELECT dept_id FROM people WHERE id = ?').get(pid);
+        if (prow && prow.dept_id === deptId) deptId = null;
+      }
+      up.run(pid, d, code, deptId || null);
+    }
     DBM.bumpMeta(db, 'assign_rev');
   }
 
   route('GET', '/api/peers', 'user', (ctx) => {
     if (!ctx.user.personId) return { peers: [] };
     const me = personRow(ctx.user.personId);
-    if (!me || !me.dept_id) return { peers: [] };
-    return { peers: q('SELECT id, first, last FROM people WHERE dept_id = ? AND id <> ? ORDER BY last, first').all(me.dept_id, me.id).map((p) => ({ id: p.id, name: persName(p) })) };
+    const myDepts = deptsOf(me);
+    if (!me || !myDepts.length) return { peers: [] };
+    // همکار یعنی کسی که دست‌کم در یک بخش (اصلی یا فرعی) با من مشترک است
+    const peers = q('SELECT id, first, last, dept_id, extra_depts FROM people WHERE id <> ?').all(me.id)
+      .filter((p) => deptsOf(p).some((d) => myDepts.includes(d)))
+      .sort((x, y) => (x.last || '').localeCompare(y.last || '') || (x.first || '').localeCompare(y.first || ''));
+    return { peers: peers.map((p) => ({ id: p.id, name: persName(p) })) };
   });
   route('GET', '/api/requests', 'user', (ctx) => ({
     requests: visibleRequests(ctx.user, 300).map((r) => serializeReq(ctx.user, r)),
@@ -576,7 +670,7 @@ function createApp(opts = {}) {
       if (typeof b.peerId !== 'string') throw bad('همکار را انتخاب کنید.');
       const peer = personRow(b.peerId);
       if (!peer || peer.id === me.id) throw bad('همکار انتخاب‌شده نامعتبر است.');
-      if (!me.dept_id || me.dept_id !== peer.dept_id) throw bad('جابه‌جایی فقط با همکارِ هم‌بخش ممکن است.');
+      // صلاحیت هم‌بخشی را planSwap بر اساس بخشِ خانه‌های درگیر بررسی می‌کند
       const d1 = intIn(b.d1, today - 1, today + 366, 'روز شیفت شما');
       const d2 = intIn(b.d2, today - 1, today + 366, 'روز شیفت همکار');
       planSwap(me.id, peer.id, d1, d2);
