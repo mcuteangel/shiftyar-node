@@ -472,6 +472,23 @@
    * خروجی: { changes, unfilled: [{j, code, missing}], summary: [{pid, load, target}], wishReport: [{pid, j, kind, code, ok}] }
    * قیدها: حداقل فاصلهٔ بین شیفت‌ها، حداکثر روز کاریِ پشت‌سرهم، سقف اضافه‌کار؛ تراز بار با کمترین کارکرد نسبت به موظفی.
    */
+  /** خانه‌هایی که «پاک‌کردن ماه» باید پاک کند: خانه‌های پرِ بازه، یا فقط
+   *  خانه‌هایی که بخششان برابرِ dept است (dept خالی یعنی همهٔ بخش‌ها) */
+  function clearMonthCells(db, peopleIds, a, b, dept) {
+    const out = [];
+    const people = new Map((db.people || []).map((p) => [p.id, p]));
+    for (const pid of (peopleIds || [])) {
+      const mine = (db.assign && db.assign[pid]) || {};
+      const p = people.get(pid);
+      for (let j = a; j <= b; j++) {
+        if (!mine[j]) continue;
+        if (dept && cellDept(db, p, j) !== dept) continue;
+        out.push([pid, j]);
+      }
+    }
+    return out;
+  }
+
   function suggestSchedule(db, o) {
     const S = db.settings, shifts = db.shifts;
     const hm = holidayMap(S, db.holidays, o.a, o.b);
@@ -495,7 +512,10 @@
       else if (w.kind === 'avoid') avoid.set(w.pid + '|' + w.j + '|' + (w.code || '*'), 1);
     }
     const people = (o.people || []).map((id) => db.people.find((p) => p.id === id)).filter(Boolean);
-    const work = {}, load = {}, cnt = {};
+    const work = {}, load = {}, cnt = {}, workDept = {};
+    // بخشِ خانه در حین پیشنهاد: خانه‌های ساخته‌شده بخشِ اجرای مشخص را می‌گیرند،
+    // وگرنه بخشِ خانه از دادهٔ موجود خوانده می‌شود (cellDept)
+    const deptOf = (p, j) => (workDept[p.id] && workDept[p.id][j]) || cellDept(db, p, j);
     const isWork = (c) => !!c && !SPECIAL[c];
     const iv = {};
     const info = (code) => {
@@ -538,6 +558,7 @@
       work[p.id][j] = code; load[p.id] += minutesOn(p, j, code);
       cnt[p.id][code] = (cnt[p.id][code] || 0) + 1;
       // اگر برنامه برای یک بخش مشخص محاسبه می‌شود، خانه‌های ساخته‌شده همان بخش را می‌گیرند
+      if (o.dept) (workDept[p.id] = workDept[p.id] || {})[j] = o.dept;
       changes.push(o.dept ? { pid: p.id, j, code, deptId: o.dept } : { pid: p.id, j, code });
     };
     // درخواست‌های «این شیفت را می‌خواهم» اول و تا جای ممکن اعمال می‌شوند
@@ -547,7 +568,9 @@
     }
     for (let j = o.a; j <= o.b; j++) {
       const cover = {};
-      for (const p of people) { const c = work[p.id][j]; if (isWork(c)) cover[c] = (cover[c] || 0) + 1; }
+      // در اجرای یک بخش، فقط شیفت‌های همان بخش پوشش حساب می‌شوند؛ شیفتِ بخشِ
+      // دیگر در همان روز، نیازِ این بخش را برآورده نمی‌کند (بارِ موظفی اما سطحِ نفر می‌ماند)
+      for (const p of people) { const c = work[p.id][j]; if (isWork(c) && (!o.dept || deptOf(p, j) === o.dept)) cover[c] = (cover[c] || 0) + 1; }
       for (const code of codes) {
         let missing = o.need[code] - (cover[code] || 0);
         while (missing > 0) {
@@ -621,7 +644,7 @@
     MONTHS, WD_SHORT, WD_FULL, FA, fa, toLatin, pad2, fmtHM, fmtHMlatin, fmtDate, fmtDateLatin, parseDate, toMin,
     SPECIAL, CONTRACTS, WORK_TYPES, defaultOfficePatterns, defaultShifts, defaultHolidays, defaultSettings,
     mergeIv, isOfficeShift, officePatternDay, officePatternIvs, findOfficePattern, autoAssignOffice,
-    shiftIvs, ivsMinutes, shiftMinutes, ivText, holidayInfo, holidayMap, computeRange, computeDeptSplit, personDepts, cellDept, restIssues, validateShift, suggestSchedule,
+    shiftIvs, ivsMinutes, shiftMinutes, ivText, holidayInfo, holidayMap, computeRange, computeDeptSplit, personDepts, cellDept, restIssues, validateShift, suggestSchedule, clearMonthCells,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = Core;
   else root.Core = Core;

@@ -154,3 +154,107 @@ test('حذف بخش: از بخش‌های فرعی می‌رود و خانه‌�
   assert.deepEqual(after.data.cfg.people.find((p) => p.id === 'p1').extraDeptIds, []);
   cfg = after.data.cfg; ver = after.data.version;
 });
+
+/* --- Fixes for the CodeAnt findings on PR #20 (verified-real) --- */
+
+test('پاک‌کردن ماه (core): در نمای یک بخش فقط خانه‌های همان بخش برمی‌گردند', () => {
+  const a = Core.j2d(1405, 7, 10), b = a + 2;
+  const db = {
+    settings: Core.defaultSettings(), holidays: Core.defaultHolidays(), shifts: Core.defaultShifts(),
+    people: [{ id: 'p1', deptId: 'd1', extraDeptIds: ['d2'] }],
+    assign: { p1: { [a]: 'M', [a + 1]: 'M', [a + 2]: 'M' } },
+    assignDept: { p1: { [a + 1]: 'd2' } },
+  };
+  assert.deepEqual(Core.clearMonthCells(db, ['p1'], a, b, 'd2'), [['p1', a + 1]]);
+  assert.deepEqual(Core.clearMonthCells(db, ['p1'], a, b, 'd1'), [['p1', a], ['p1', a + 2]]);
+  assert.deepEqual(Core.clearMonthCells(db, ['p1'], a, b, null), [['p1', a], ['p1', a + 1], ['p1', a + 2]]);
+});
+
+test('پیشنهاد خودکار (core): در اجرای یک بخش، شیفتِ بخش دیگر پوشش حساب نمی‌شود', () => {
+  const a = Core.j2d(1405, 7, 10);
+  const mkDb = () => ({
+    settings: Core.defaultSettings(), holidays: Core.defaultHolidays(), shifts: Core.defaultShifts(),
+    people: [
+      { id: 'p1', contract: 'company', deptId: 'd1', extraDeptIds: ['d2'] },
+      { id: 'p2', contract: 'company', deptId: 'd2', extraDeptIds: [] },
+    ],
+    assign: { p1: { [a]: 'M' } },
+    assignDept: { p1: { [a]: 'd1' } },
+  });
+  const opts = { people: ['p1', 'p2'], a, b: a, need: { M: 1 }, maxConsec: 6, capMin: 100 * 60 };
+  const deptRun = Core.suggestSchedule(mkDb(), Object.assign({}, opts, { dept: 'd2' }));
+  assert.deepEqual(deptRun.changes, [{ pid: 'p2', j: a, code: 'M', deptId: 'd2' }], 'شیفتِ بخش اصلی نیازِ بخش فرعی را برآورده نمی‌کند');
+  assert.deepEqual(deptRun.unfilled, []);
+  const allRun = Core.suggestSchedule(mkDb(), opts);
+  assert.deepEqual(allRun.changes, [], 'بدون بخشِ مشخص، همان شیفت پوشش است');
+});
+
+test('مرخصی: مدیر بخش فرعی نمی‌تواند تأیید کند؛ مدیر بخش اصلی می‌تواند', async () => {
+  // تستِ حذفِ بخش، d2 را برده بود؛ پیکربندیِ چندبخشی را برمی‌گردانیم و p4 را برای مدیرِ بخش اصلی اضافه می‌کنیم
+  const cur0 = await admin.get('/api/config');
+  const restored = Object.assign({}, cur0.data.cfg, {
+    depts: [{ id: 'd1', name: 'اورژانس', color: '#e0573f' }, { id: 'd2', name: 'داخلی', color: '#2f7dd1' }],
+    people: [
+      { id: 'p1', first: 'الف', last: 'یک', code: '1', phone: '', contract: 'company', deptId: 'd1', extraDeptIds: ['d2'] },
+      { id: 'p2', first: 'ب', last: 'دو', code: '2', phone: '', contract: 'company', deptId: 'd2', extraDeptIds: [] },
+      { id: 'p3', first: 'ج', last: 'سه', code: '3', phone: '', contract: 'company', deptId: 'd1', extraDeptIds: ['d2'] },
+      { id: 'p4', first: 'د', last: 'چهار', code: '4', phone: '', contract: 'company', deptId: 'd1', extraDeptIds: [] },
+    ],
+  });
+  let r = await admin.put('/api/config', { version: cur0.data.version, cfg: restored });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  cfg = (await admin.get('/api/config')).data.cfg; ver = (await admin.get('/api/config')).data.version;
+  // حذفِ بخشِ d2 در تستِ قبلی، عضویتِ mgrB در user_depts را با CASCADE برده بود؛ برمی‌گردانیم
+  const users = (await admin.get('/api/users')).data.users;
+  const mgrBId = users.find((u) => u.code === 'mgrB').id;
+  r = await admin.req('PATCH', `/api/users/${mgrBId}`, { deptIds: ['d2'] });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const mk = await admin.post('/api/users', { code: 'mgrA', role: 'manager', personId: 'p4', deptIds: ['d1'], password: 'Pass#word123' });
+  assert.equal(mk.status, 200, JSON.stringify(mk.data));
+  const mgrA = await loginAs('mgrA', 'Pass#word123');
+  const d1 = T + 60, d2d = T + 61;
+  r = await admin.post('/api/assign', { changes: [{ pid: 'p1', j: d1, code: 'M' }, { pid: 'p1', j: d2d, code: 'M', deptId: 'd2' }] });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  r = await staff1.post('/api/requests', { kind: 'leave', code: 'LV', from: d1, to: d2d });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const id = r.data.request.id;
+  // خواندن برای مدیر بخش فرعی همچنان ممکن است، ولی دکمهٔ تأیید ندارد
+  r = await mgrB.get('/api/requests');
+  const req = r.data.requests.find((x) => x.id === id);
+  assert.ok(req, 'درخواست برای مدیر بخش فرعی دیده می‌شود');
+  assert.ok(!req.actions.includes('approve'), 'مدیر بخش فرعی دکمهٔ تأیید ندارد');
+  assert.equal((await mgrB.post(`/api/requests/${id}/respond`, { action: 'approve', reply: '' })).status, 403);
+  assert.equal(await assignCodeOf(admin, 'p1', d1), 'M', 'شیفت بخش اصلی دست‌نخورده');
+  assert.equal(await assignCodeOf(admin, 'p1', d2d), 'M', 'شیفت بخش فرعی دست‌نخورده');
+  r = await mgrA.post(`/api/requests/${id}/respond`, { action: 'approve', reply: '' });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.request.status, 'approved');
+  assert.equal(await assignCodeOf(admin, 'p1', d1), 'LV');
+  assert.equal(await assignCodeOf(admin, 'p1', d2d), 'LV');
+});
+
+test('حذفِ جعلیِ خانهٔ بخش دیگر توسط مدیر بخش فرعی رد می‌شود', async () => {
+  const day = T + 70;
+  let r = await admin.post('/api/assign', { changes: [{ pid: 'p1', j: day, code: 'M' }] });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  r = await mgrB.post('/api/assign', { changes: [{ pid: 'p1', j: day, code: null }] });
+  assert.equal(r.status, 403, JSON.stringify(r.data));
+  assert.equal(await assignCodeOf(admin, 'p1', day), 'M', 'خانهٔ بخش اصلی پاک نشده');
+});
+
+test('حذف بخش فرعی از نفر: خانه‌هایش به بخش اصلی برمی‌گردند (سرور)', async () => {
+  const day = T + 80;
+  let r = await admin.post('/api/assign', { changes: [{ pid: 'p1', j: day, code: 'M', deptId: 'd2' }] });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(await assignDeptOf(admin, 'p1', day), 'd2');
+  const cur = await admin.get('/api/config');
+  const next = Object.assign({}, cur.data.cfg, {
+    people: cur.data.cfg.people.map((p) => (p.id === 'p1' ? Object.assign({}, p, { extraDeptIds: [] }) : p)),
+  });
+  r = await admin.put('/api/config', { version: cur.data.version, cfg: next });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(await assignCodeOf(admin, 'p1', day), 'M', 'شیفت حفظ شده');
+  assert.equal(await assignDeptOf(admin, 'p1', day), null, 'بخشِ خانه به اصلی برگشته (NULL)');
+  const rb = await mgrB.get(`/api/assign?from=${day}&to=${day}`);
+  assert.equal(rb.data.assign.p1, undefined, 'مدیر بخش فرعی دیگر خانه را نمی‌بیند');
+});

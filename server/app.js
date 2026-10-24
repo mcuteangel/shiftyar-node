@@ -316,6 +316,14 @@ function createApp(opts = {}) {
       c.people.forEach((p, i) => pIns.run(p.id, p.first, p.last, p.code, p.phone, p.contract, p.deptId || null, JSON.stringify(p.extraDeptIds || []), p.workType || 'rotating', p.officePatternId || null, i));
       const keepD = new Set(c.depts.map((d) => d.id));
       for (const r of q('SELECT id FROM depts').all()) if (!keepD.has(r.id)) q('DELETE FROM depts WHERE id = ?').run(r.id);
+      // عضویتِ بخش که از نفر گرفته شده (نه حذفِ کلِ بخش — آن با FK=SET NULL
+      // انجام شد): خانه‌های صریحِ آن بخش به بخش اصلی برمی‌گردند (NULL)
+      for (const p of c.people) {
+        const allowed = new Set([p.deptId, ...(p.extraDeptIds || [])].filter(Boolean));
+        for (const r of q('SELECT DISTINCT dept_id FROM assign WHERE person_id = ? AND dept_id IS NOT NULL').all(p.id)) {
+          if (!allowed.has(r.dept_id)) q('UPDATE assign SET dept_id = NULL WHERE person_id = ? AND dept_id = ?').run(p.id, r.dept_id);
+        }
+      }
       // شیفت‌ها و تعطیلات
       q('DELETE FROM shifts').run();
       const sIns = q('INSERT INTO shifts(code, body, pos) VALUES(?, ?, ?)');
@@ -540,12 +548,20 @@ function createApp(opts = {}) {
     return (r && r.dept_id) || p.dept_id || '';
   };
 
-  /** مدیر سیستم همه؛ مدیر بخش فقط افراد بخش‌های خودش و نه درخواست خودش */
+  /** مدیر سیستم همه؛ مدیر بخش فقط افراد بخش‌های خودش و نه درخواست خودش.
+   *  مرخصی سطحِ نفر است (تأییدش شیفت‌های همهٔ بخش‌ها را رونویسی می‌کند)، پس
+   *  تأییدِ مرخصی فقط با مدیرِ بخشِ اصلیِ نفر است، نه مدیرِ بخشِ فرعی.
+   *  جابه‌جایی همین محافظت را از بازبینیِ planSwap هنگام تأیید می‌گیرد. */
   function canApprove(user, r) {
     if (user.role === 'admin') return true;
     if (user.role !== 'manager' || r.person_id === user.personId) return false;
     const w = scope(user).write;
-    return w.has(r.person_id) && (!r.peer_id || w.has(r.peer_id));
+    if (!w.has(r.person_id) || (r.peer_id && !w.has(r.peer_id))) return false;
+    if (r.kind === 'leave') {
+      const p = personRow(r.person_id);
+      return !!p && !!p.dept_id && user.deptIds.includes(p.dept_id);
+    }
+    return true;
   }
   function actionsFor(user, r) {
     const out = [];

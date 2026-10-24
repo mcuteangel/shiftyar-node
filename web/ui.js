@@ -542,6 +542,9 @@ function viewSched() {
         <span>${ui.editMode ? '🔒 قفل و اتمام ویرایش' : '✏️ فعال‌سازی ویرایش شیفت‌ها'}</span>
       </button>`
     : '';
+  const clearConfirm = (ui.dept !== 'all' && ui.dept !== 'none' && dept(ui.dept))
+    ? `برنامهٔ این ماه در بخش ${esc(dept(ui.dept).name)} پاک شود؟`
+    : 'برنامهٔ این ماه پاک شود؟';
   const editControls = (canEdit() && ui.editMode)
     ? `<div class="panel">${brushBar()}
         <div class="bar" style="flex-wrap:wrap;gap:6px">
@@ -553,7 +556,7 @@ function viewSched() {
           <span class="sp"></span>
           <button class="btn" data-act="autoassignoffice" title="پر کردن خودکار روزهای کاری اداری مطابق الگوی هر فرد">تکمیل خودکار اداری</button>
           <button class="btn" data-act="autoopen">پیشنهاد خودکار شیفت</button>
-          <button class="btn danger" data-act="clearmonth" data-confirm="برنامهٔ این ماه پاک شود؟">پاک‌کردن ماه</button>
+          <button class="btn danger" data-act="clearmonth" data-confirm="${clearConfirm}">پاک‌کردن ماه</button>
         </div>
         <div class="note">حالت ویرایش فعال است: با انتخاب قلم می‌توانید روی خانه‌ها کلیک کنید یا بکشید. پس از اتمام کار، دکمهٔ «قفل ویرایش» را بزنید.</div>
       </div>`
@@ -1509,7 +1512,11 @@ document.addEventListener('click', async (e) => {
     case 'copypat': { await copyPattern($('#copy-src').value); return render(); }
     case 'clearmonth': {
       const { a, b } = monthInfo(); const st = [];
-      for (const p of visiblePeople()) for (let j = a; j <= b; j++) setAssign(p.id, j, undefined, st);
+      // در نمای یک بخش فقط خانه‌های همان بخش پاک می‌شوند؛ خانه‌های قفلِ بخش‌های
+      // دیگر دست نمی‌خورند (setAssign فقط برای خانه‌های برگشتی صدا می‌شود، پس
+      // بازگردانی هم فقط همان خانه‌ها را برمی‌گرداند)
+      const viewDept = (ui.dept !== 'all' && ui.dept !== 'none') ? ui.dept : null;
+      for (const [pid, j] of Core.clearMonthCells(dbv(), visiblePeople().map((p) => p.id), a, b, viewDept)) setAssign(pid, j, undefined, st);
       finishStroke(st, 'پاک‌کردن ماه'); return render();
     }
     case 'clearsample': {
@@ -1733,7 +1740,17 @@ document.addEventListener('submit', (e) => {
     };
     if (!rec.first && !rec.last) return flash('نام را بنویسید.', false, '#f-person-msg');
     if (rec.code && cfg.people.some((p) => p.code === rec.code && p.id !== ui.editPerson)) return flash('این کد پرسنلی قبلاً ثبت شده است.', false, '#f-person-msg');
-    if (ui.editPerson) { Object.assign(person(ui.editPerson), rec); logEv('ویرایش پرسنل: ' + pname(rec)); }
+    if (ui.editPerson) {
+      const pid = ui.editPerson, oldP = person(pid);
+      // بخش‌هایی که از عضویت نفر می‌روند: خانه‌هایشان به بخش اصلی برمی‌گردند
+      // (ورودیِ تنکِ assignDept حذف می‌شود). setAssign تغییرِ بخش را هم در حالت
+      // سرور (صفِ خانه) و هم در حالت محلی (ماهِ کثیف) ماندگار می‌کند.
+      const removed = personDepts(oldP).filter((d) => !personDepts(rec).includes(d));
+      Object.assign(oldP, rec); logEv('ویرایش پرسنل: ' + pname(rec));
+      if (removed.length) for (const j in (DB.assignDept[pid] || {})) {
+        if (removed.includes(DB.assignDept[pid][j]) && (DB.assign[pid] || {})[j]) setAssign(pid, +j, DB.assign[pid][j], null, null);
+      }
+    }
     else { cfg.people.push(Object.assign({ id: uid('p') }, rec)); logEv('افزودن پرسنل: ' + pname(rec)); }
     ui.editPerson = null; Store.touchCfg(); render();
   } else if (f.id === 'f-offpat') {
