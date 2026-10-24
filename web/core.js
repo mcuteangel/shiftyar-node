@@ -268,6 +268,22 @@
     return m;
   }
 
+  /* ---------- بخش‌ها: بخش اصلی + بخش‌های فرعی، و بخشِ هر خانهٔ شیفت ---------- */
+  /** فهرست بخش‌های یک نفر: بخش اصلی اول، سپس بخش‌های فرعی (بدون تکرار و خالی) */
+  function personDepts(p) {
+    const out = [];
+    if (p) {
+      if (p.deptId) out.push(p.deptId);
+      for (const d of (p.extraDeptIds || [])) if (d && !out.includes(d)) out.push(d);
+    }
+    return out;
+  }
+  /** بخشِ یک خانهٔ شیفت: بخشِ صریحِ خانه، وگرنه بخش اصلی نفر (خانه‌های قدیمی) */
+  function cellDept(db, p, j) {
+    const explicit = db.assignDept && db.assignDept[p.id] && db.assignDept[p.id][j];
+    return explicit || (p && p.deptId) || '';
+  }
+
   /* ---------- محاسبه برای یک نفر در بازه [a, b] (شماره روز ژولیانی) ---------- */
   function findOfficePattern(db, p) {
     if (p.workType !== 'office') return null;
@@ -344,6 +360,60 @@
     return { days, holCount, duty, actual, weighted, holidayMins, credit, overtime: weighted + credit - duty, counts };
   }
 
+  /**
+   * تفکیک کارکرد یک نفر در بازه بر اساس بخشِ خانهٔ شیفت (نه بخشِ نفر).
+   * خروجی: { deptId: { actual, weighted, credit, counts } }؛ موظفی (duty) سطحِ
+   * نفر است و اینجا تقسیم نمی‌شود، پس در خروجی نیست. بازه‌های هر بخش جداگانه
+   * اجتماع می‌شوند؛ شیفتی که از نیمه‌شب می‌گذرد به بخشِ روزِ شروعش می‌رسد.
+   */
+  function computeDeptSplit(db, p, a, b, hm) {
+    const S = db.settings;
+    hm = hm || holidayMap(S, db.holidays, a, b);
+    const mine = (db.assign && db.assign[p.id]) || {};
+    const isOff = p.workType === 'office';
+    const offPat = isOff ? findOfficePattern(db, p) : null;
+    const factor = (S.factors && S.factors[p.contract]) != null ? S.factors[p.contract] : 1;
+    const split = {};
+    const slot = (d) => (split[d] = split[d] || { actual: 0, weighted: 0, credit: 0, counts: {} });
+    const blocksByDept = {};
+    for (const k in mine) {
+      const j = +k, code = mine[k];
+      const inRange = j >= a && j <= b;
+      const d = cellDept(db, p, j);
+      let dayStandardDuty = S.dutyMin;
+      if (isOff && offPat) dayStandardDuty = ivsMinutes(officePatternIvs(offPat, weekdayOf(j)));
+      if (SPECIAL[code]) {
+        if (inRange) {
+          const s = slot(d);
+          s.counts[code] = (s.counts[code] || 0) + 1;
+          if (SPECIAL[code].credit && !hm[j]) s.credit += dayStandardDuty;
+        }
+        continue;
+      }
+      if (j < a - 3 || j > b) continue;
+      if (inRange) { const s = slot(d); s.counts[code] = (s.counts[code] || 0) + 1; }
+      const sh = (db.shifts || []).find((s) => s.code === code);
+      let ivs;
+      if (isOff && offPat && (code === 'OF' || code === 'M' || (sh && sh.isOffice))) ivs = officePatternIvs(offPat, weekdayOf(j));
+      else ivs = shiftIvs(db.shifts, code);
+      const list = (blocksByDept[d] = blocksByDept[d] || []);
+      for (const iv of ivs) list.push([j * 1440 + iv[0], j * 1440 + iv[1]]);
+    }
+    for (const d in blocksByDept) {
+      const s = slot(d);
+      for (const iv of mergeIv(blocksByDept[d])) {
+        for (let j = Math.floor(iv[0] / 1440); j <= Math.floor((iv[1] - 1) / 1440); j++) {
+          if (j < a || j > b) continue;
+          const mins = Math.min(iv[1], (j + 1) * 1440) - Math.max(iv[0], j * 1440);
+          s.actual += mins;
+          s.weighted += hm[j] ? mins * factor : mins;
+        }
+      }
+      s.weighted = Math.round(s.weighted * 100) / 100;
+    }
+    return split;
+  }
+
   /* ---------- حداقل فاصله بین شیفت‌ها ---------- */
   /** نقشهٔ روز → فهرست پیام برای روزهایی که شیفت‌شان با شیفت قبل تداخل یا فاصلهٔ کم دارد */
   function restIssues(db, p) {
@@ -402,6 +472,23 @@
    * خروجی: { changes, unfilled: [{j, code, missing}], summary: [{pid, load, target}], wishReport: [{pid, j, kind, code, ok}] }
    * قیدها: حداقل فاصلهٔ بین شیفت‌ها، حداکثر روز کاریِ پشت‌سرهم، سقف اضافه‌کار؛ تراز بار با کمترین کارکرد نسبت به موظفی.
    */
+  /** خانه‌هایی که «پاک‌کردن ماه» باید پاک کند: خانه‌های پرِ بازه، یا فقط
+   *  خانه‌هایی که بخششان برابرِ dept است (dept خالی یعنی همهٔ بخش‌ها) */
+  function clearMonthCells(db, peopleIds, a, b, dept) {
+    const out = [];
+    const people = new Map((db.people || []).map((p) => [p.id, p]));
+    for (const pid of (peopleIds || [])) {
+      const mine = (db.assign && db.assign[pid]) || {};
+      const p = people.get(pid);
+      for (let j = a; j <= b; j++) {
+        if (!mine[j]) continue;
+        if (dept && cellDept(db, p, j) !== dept) continue;
+        out.push([pid, j]);
+      }
+    }
+    return out;
+  }
+
   function suggestSchedule(db, o) {
     const S = db.settings, shifts = db.shifts;
     const hm = holidayMap(S, db.holidays, o.a, o.b);
@@ -425,7 +512,10 @@
       else if (w.kind === 'avoid') avoid.set(w.pid + '|' + w.j + '|' + (w.code || '*'), 1);
     }
     const people = (o.people || []).map((id) => db.people.find((p) => p.id === id)).filter(Boolean);
-    const work = {}, load = {}, cnt = {};
+    const work = {}, load = {}, cnt = {}, workDept = {};
+    // بخشِ خانه در حین پیشنهاد: خانه‌های ساخته‌شده بخشِ اجرای مشخص را می‌گیرند،
+    // وگرنه بخشِ خانه از دادهٔ موجود خوانده می‌شود (cellDept)
+    const deptOf = (p, j) => (workDept[p.id] && workDept[p.id][j]) || cellDept(db, p, j);
     const isWork = (c) => !!c && !SPECIAL[c];
     const iv = {};
     const info = (code) => {
@@ -467,7 +557,9 @@
     const place = (p, j, code) => {
       work[p.id][j] = code; load[p.id] += minutesOn(p, j, code);
       cnt[p.id][code] = (cnt[p.id][code] || 0) + 1;
-      changes.push({ pid: p.id, j, code });
+      // اگر برنامه برای یک بخش مشخص محاسبه می‌شود، خانه‌های ساخته‌شده همان بخش را می‌گیرند
+      if (o.dept) (workDept[p.id] = workDept[p.id] || {})[j] = o.dept;
+      changes.push(o.dept ? { pid: p.id, j, code, deptId: o.dept } : { pid: p.id, j, code });
     };
     // درخواست‌های «این شیفت را می‌خواهم» اول و تا جای ممکن اعمال می‌شوند
     for (const w of wishes.filter((x) => x.kind === 'want').sort((x, y) => x.j - y.j)) {
@@ -476,7 +568,9 @@
     }
     for (let j = o.a; j <= o.b; j++) {
       const cover = {};
-      for (const p of people) { const c = work[p.id][j]; if (isWork(c)) cover[c] = (cover[c] || 0) + 1; }
+      // در اجرای یک بخش، فقط شیفت‌های همان بخش پوشش حساب می‌شوند؛ شیفتِ بخشِ
+      // دیگر در همان روز، نیازِ این بخش را برآورده نمی‌کند (بارِ موظفی اما سطحِ نفر می‌ماند)
+      for (const p of people) { const c = work[p.id][j]; if (isWork(c) && (!o.dept || deptOf(p, j) === o.dept)) cover[c] = (cover[c] || 0) + 1; }
       for (const code of codes) {
         let missing = o.need[code] - (cover[code] || 0);
         while (missing > 0) {
@@ -550,7 +644,7 @@
     MONTHS, WD_SHORT, WD_FULL, FA, fa, toLatin, pad2, fmtHM, fmtHMlatin, fmtDate, fmtDateLatin, parseDate, toMin,
     SPECIAL, CONTRACTS, WORK_TYPES, defaultOfficePatterns, defaultShifts, defaultHolidays, defaultSettings,
     mergeIv, isOfficeShift, officePatternDay, officePatternIvs, findOfficePattern, autoAssignOffice,
-    shiftIvs, ivsMinutes, shiftMinutes, ivText, holidayInfo, holidayMap, computeRange, restIssues, validateShift, suggestSchedule,
+    shiftIvs, ivsMinutes, shiftMinutes, ivText, holidayInfo, holidayMap, computeRange, computeDeptSplit, personDepts, cellDept, restIssues, validateShift, suggestSchedule, clearMonthCells,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = Core;
   else root.Core = Core;

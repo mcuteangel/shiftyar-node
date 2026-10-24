@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS people (
   id TEXT PRIMARY KEY, first TEXT NOT NULL DEFAULT '', last TEXT NOT NULL DEFAULT '', code TEXT NOT NULL DEFAULT '',
   phone TEXT NOT NULL DEFAULT '', contract TEXT NOT NULL, dept_id TEXT REFERENCES depts(id) ON DELETE SET NULL,
   work_type TEXT NOT NULL DEFAULT 'rotating', office_pattern_id TEXT,
+  extra_depts TEXT NOT NULL DEFAULT '[]',
   pos INTEGER NOT NULL DEFAULT 0);
 CREATE UNIQUE INDEX IF NOT EXISTS people_code ON people(code) WHERE code <> '';
 CREATE INDEX IF NOT EXISTS people_dept ON people(dept_id);
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS shifts (code TEXT PRIMARY KEY, body TEXT NOT NULL, po
 CREATE TABLE IF NOT EXISTS holidays (id TEXT PRIMARY KEY, jy INTEGER, jm INTEGER NOT NULL, jd INTEGER NOT NULL, name TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS assign (
   person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE, day INTEGER NOT NULL, code TEXT NOT NULL,
+  dept_id TEXT REFERENCES depts(id) ON DELETE SET NULL,
   PRIMARY KEY (person_id, day)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS assign_day ON assign(day);
 CREATE TABLE IF NOT EXISTS users (
@@ -66,6 +68,12 @@ function open(file) {
     const cols = db.prepare('PRAGMA table_info(people)').all().map((r) => r.name);
     if (!cols.includes('work_type')) db.exec("ALTER TABLE people ADD COLUMN work_type TEXT NOT NULL DEFAULT 'rotating'");
     if (!cols.includes('office_pattern_id')) db.exec('ALTER TABLE people ADD COLUMN office_pattern_id TEXT');
+    // Multi-dept (issue #19): secondary departments per person, department per assignment cell.
+    // dept_id NULL on assign means "person's main department" (legacy rows); deleting a
+    // department SETs its cells to NULL, i.e. they fall back to the main department.
+    if (!cols.includes('extra_depts')) db.exec("ALTER TABLE people ADD COLUMN extra_depts TEXT NOT NULL DEFAULT '[]'");
+    const acols = db.prepare('PRAGMA table_info(assign)').all().map((r) => r.name);
+    if (!acols.includes('dept_id')) db.exec('ALTER TABLE assign ADD COLUMN dept_id TEXT REFERENCES depts(id) ON DELETE SET NULL');
   } catch (_) { /* ignore */ }
   seed(db);
   return db;
