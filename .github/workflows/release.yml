@@ -1,0 +1,42 @@
+name: Release launcher package
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag for a draft test release (e.g. v0.0.0-test)'
+        required: true
+        default: 'v0.0.0-test'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build packages
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then TAG="${{ github.ref_name }}"; else TAG="${{ inputs.tag }}"; fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          mkdir -p pkg/app
+          cp -r server web package.json pkg/app/
+          echo "${TAG#v}" > pkg/app/version.txt
+          cd pkg
+          zip -r ../shiftyar-app.zip app
+          cd ..
+          zip -j shiftyar-launcher.zip launcher/shiftyar-launcher.cmd launcher/update.ps1 launcher/README.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            gh release create "$TAG" shiftyar-app.zip shiftyar-launcher.zip --draft --title "$TAG" --notes "Draft test release for the Windows launcher (not followed by auto-update)."
+          else
+            gh release create "$TAG" shiftyar-app.zip shiftyar-launcher.zip --title "$TAG" --notes "Shiftyar app package for the Windows launcher auto-update, plus the launcher files."
+          fi
