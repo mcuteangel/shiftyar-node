@@ -1,6 +1,8 @@
 @echo off
 rem Shiftyar Launcher - Windows, no install, no admin required.
 rem Double-click this file and pick an option from the menu.
+rem Run with argument "auto" (e.g. from a Startup shortcut) to update and
+rem start the server in background with no menu and no browser window.
 rem Notes:
 rem  - Messages are in English on purpose: the Windows console codepage
 rem    garbles Persian text. See README.md (Persian) for documentation.
@@ -20,6 +22,7 @@ set "DATA_FILE=%~dp0data\shiftyar.db"
 set "PID_FILE=%~dp0server.pid"
 set "PS1=%~dp0update.ps1"
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>&1
+if /i "%~1"=="auto" goto :autostart
 
 :menu
 cls
@@ -44,15 +47,31 @@ if errorlevel 2 goto :startfg
 if errorlevel 1 goto :startbg
 goto :menu
 
+:autostart
+call :update
+if errorlevel 1 exit /b 1
+call :status
+if not "%SRV%"=="stopped" exit /b 0
+where powershell >nul 2>&1
+if errorlevel 1 exit /b 1
+where node >nul 2>&1
+if errorlevel 1 exit /b 1
+set "AUTO=1"
+goto :bg4
+
 :status
 set "SRV=stopped"
 set "VER=none"
 set "PID="
 if exist "%APP_DIR%\version.txt" set /p VER=<"%APP_DIR%\version.txt"
-if not exist "%PID_FILE%" goto :statusdone
+if not exist "%PID_FILE%" goto :statusport
 set /p PID=<"%PID_FILE%"
 tasklist /FI "PID eq %PID%" /FI "IMAGENAME eq node.exe" 2>nul | find /I "node.exe" >nul
 if not errorlevel 1 set "SRV=running (PID %PID%)"
+if not "%SRV%"=="stopped" goto :statusdone
+:statusport
+netstat -ano 2>nul | findstr /C:":3000 " >nul
+if not errorlevel 1 set "SRV=running (port 3000, no PID file)"
 :statusdone
 exit /b 0
 
@@ -85,15 +104,17 @@ echo node not found on PATH. Add your portable node folder to User Path first.
 pause
 goto :menu
 :bg4
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:DB_PATH = '%DATA_FILE%'; $p = Start-Process -FilePath 'node' -ArgumentList 'server\index.js' -WorkingDirectory '%APP_DIR%' -WindowStyle Hidden -RedirectStandardOutput '%LOG_DIR%\server.log' -RedirectStandardError '%LOG_DIR%\server.err.log' -PassThru; $p.Id | Out-File -FilePath '%PID_FILE%' -Encoding ascii"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:DB_PATH = $env:DATA_FILE; $p = Start-Process -FilePath 'node' -ArgumentList 'server\index.js' -WorkingDirectory $env:APP_DIR -WindowStyle Hidden -RedirectStandardOutput ${env:LOG_DIR}\server.log -RedirectStandardError ${env:LOG_DIR}\server.err.log -PassThru; $p.Id | Out-File -FilePath $env:PID_FILE -Encoding ascii"
 timeout /t 2 /nobreak >nul
 call :status
 if not "%SRV%"=="stopped" goto :bg5
 echo Failed to start. See logs\server.err.log for details.
+if "%AUTO%"=="1" exit /b 1
 pause
 goto :menu
 :bg5
 echo Server started in background.
+if "%AUTO%"=="1" exit /b 0
 start http://localhost:3000
 pause
 goto :menu
@@ -111,7 +132,12 @@ goto :menu
 :fg1
 call :status
 if "%SRV%"=="stopped" goto :fg2
+if "%SRV%"=="running (port 3000, no PID file)" goto :fg1p
 echo Server is already running in background. Stop it first with option 4.
+pause
+goto :menu
+:fg1p
+echo A server is already running on port 3000 (no PID file). Stop it first, then try again.
 pause
 goto :menu
 :fg2
@@ -150,13 +176,13 @@ echo PowerShell not found. Open logs\server.log in Notepad instead.
 pause
 goto :menu
 :log2
-powershell -NoProfile -Command "Get-Content '%LOG_DIR%\server.log' -Tail 50"
+powershell -NoProfile -Command "Get-Content ${env:LOG_DIR}\server.log -Tail 50"
 if not exist "%LOG_DIR%\server.err.log" goto :log3
 set "ERRSHOW=0"
 for %%F in ("%LOG_DIR%\server.err.log") do if %%~zF gtr 0 set "ERRSHOW=1"
 if not "%ERRSHOW%"=="1" goto :log3
 echo --- errors ---
-powershell -NoProfile -Command "Get-Content '%LOG_DIR%\server.err.log' -Tail 20"
+powershell -NoProfile -Command "Get-Content ${env:LOG_DIR}\server.err.log -Tail 20"
 :log3
 pause
 goto :menu
@@ -171,6 +197,8 @@ set "PID="
 set /p PID=<"%PID_FILE%"
 tasklist /FI "PID eq %PID%" /FI "IMAGENAME eq node.exe" 2>nul | find /I "node.exe" >nul
 if errorlevel 1 goto :stop2
+powershell -NoProfile -Command "if ((Get-CimInstance Win32_Process -Filter 'ProcessId=%PID%' -ErrorAction SilentlyContinue).CommandLine -notlike '*server\index.js*') { exit 1 }"
+if errorlevel 1 goto :stop4
 taskkill /PID %PID% /F >nul 2>&1
 echo Background server stopped.
 goto :stop3
@@ -178,5 +206,9 @@ goto :stop3
 echo Background server is not running (stale PID file).
 :stop3
 del "%PID_FILE%" >nul 2>&1
+pause
+goto :menu
+:stop4
+echo Could not verify the recorded process. Not stopping it.
 pause
 goto :menu
