@@ -208,21 +208,23 @@ t('پیشنهاد خودکار هوشمند: درخواست روز، آف، تر
   assert.strictEqual(r2.wishReport[0].ok, false);
 });
 
+// الگوی اداری ۶ روز در هفته ۷ تا ۱۳، مشترک بین آزمون‌های پرسنل اداری
+const pattern6d = {
+  id: 'pat6d',
+  name: '۶ روز در هفته ۷ تا ۱۳',
+  days: {
+    0: { active: true, s: '07:00', e: '13:00' },
+    1: { active: true, s: '07:00', e: '13:00' },
+    2: { active: true, s: '07:00', e: '13:00' },
+    3: { active: true, s: '07:00', e: '13:00' },
+    4: { active: true, s: '07:00', e: '13:00' },
+    5: { active: true, s: '07:00', e: '13:00' },
+    6: { active: false, s: '07:00', e: '13:00' },
+  },
+};
+
 t('پرسنل اداری: محاسبه موظفی پویا و انتساب خودکار شیفت اداری', () => {
   // پاییز و زمستان: شنبه تا پنجشنبه ۶ روز در هفته ۷ تا ۱۳ (۳۶۰ دقیقه در هر روز کاری)
-  const pattern6d = {
-    id: 'pat6d',
-    name: '۶ روز در هفته ۷ تا ۱۳',
-    days: {
-      0: { active: true, s: '07:00', e: '13:00' },
-      1: { active: true, s: '07:00', e: '13:00' },
-      2: { active: true, s: '07:00', e: '13:00' },
-      3: { active: true, s: '07:00', e: '13:00' },
-      4: { active: true, s: '07:00', e: '13:00' },
-      5: { active: true, s: '07:00', e: '13:00' },
-      6: { active: false, s: '07:00', e: '13:00' },
-    },
-  };
   const settings = Object.assign({}, C.defaultSettings(), { officePatterns: [pattern6d] });
   const offShift = { code: 'OF', name: 'اداری', isOffice: true, kind: 'simple', segs: [{ o: 0, s: '07:00', e: '13:00' }] };
   const shifts = C.defaultShifts().concat([offShift]);
@@ -254,6 +256,44 @@ t('پرسنل اداری: محاسبه موظفی پویا و انتساب خو�
   assert.strictEqual(r2.actual, 25 * 360);
   assert.strictEqual(r2.credit, 360);
   assert.strictEqual(r2.overtime, 0);
+});
+
+t('پرسنل اداری: تکمیل خودکار بدون شیفت isOffice کد معتبر می‌دهد (#43)', () => {
+  // بدون هیچ شیفت isOffice، fallback قبلی 'OF' بود که سرور رد می‌کند
+  // (OF نه در جدول شیفت‌هاست نه در SPECIAL)؛ حالا 'M' می‌دهد که هم معتبر است
+  // هم در محاسبه‌ی ساعات اداری نشان‌گر اداری حساب می‌شود
+  const settings = Object.assign({}, C.defaultSettings(), { officePatterns: [pattern6d] });
+  const p = { id: 'p_off', first: 'کارمند', last: 'اداری', contract: 'official', workType: 'office', officePatternId: 'pat6d' };
+  const a = C.j2d(1405, 7, 1), b = a + 29;
+  const db = { settings, shifts: C.defaultShifts(), holidays: C.defaultHolidays(), people: [p], assign: {} };
+  const autoChanges = C.autoAssignOffice(db, { a, b });
+  assert.strictEqual(autoChanges.length, 26);
+  assert.ok(autoChanges.every((ch) => ch.pid === 'p_off' && ch.code === 'M'));
+  assert.ok(autoChanges.every((ch) => C.defaultShifts().some((s) => s.code === ch.code) || C.SPECIAL[ch.code]));
+  // ساعات اداری از روی الگو محاسبه می‌شود، نه از روی شیفت M
+  db.assign[p.id] = {};
+  for (const ch of autoChanges) db.assign[p.id][ch.j] = ch.code;
+  const r = C.computeRange(db, p, a, b);
+  assert.strictEqual(r.duty, 26 * 360);
+  assert.strictEqual(r.actual, 26 * 360);
+});
+
+t('پرسنل اداری: بدون شیفت isOffice و بدون M هیچ تغییری صادر نمی‌شود (نیت‌پیک CodeAnt روی PR #45)', () => {
+  // وقتی فهرست شیفت نه isOffice دارد نه M، جایگزین معتبری وجود ندارد؛
+  // صدور 'M' باعث رد کل بچ با ۴۰۰ از سوی سرور می‌شد
+  const settings = Object.assign({}, C.defaultSettings(), { officePatterns: [pattern6d] });
+  const p = { id: 'p_off', first: 'کارمند', last: 'اداری', contract: 'official', workType: 'office', officePatternId: 'pat6d' };
+  const a = C.j2d(1405, 7, 1), b = a + 29;
+  const db = {
+    people: [p],
+    shifts: C.defaultShifts().filter((s) => s.code !== 'M'),
+    depts: [],
+    settings,
+    holidays: [],
+    assign: {},
+  };
+  const changes = C.autoAssignOffice(db, { a, b });
+  assert.strictEqual(changes.length, 0);
 });
 
 /* ---------- Issue #19: چندبخشی ---------- */
