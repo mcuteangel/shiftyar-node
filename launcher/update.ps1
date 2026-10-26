@@ -16,6 +16,11 @@
 #    a lock file and each run uses its own per-process temp dir.
 #  - Prints exactly one word: OK, UPDATED, NOASSET, DBFAIL, or OFFLINE.
 #  - Any other failure prints OFFLINE and never blocks the server start.
+#  - Secure connections on some networks fail intermittently (TLS
+#    handshakes aborted mid-flight, succeeding after a few retries):
+#    the release check and the download are each retried up to 6 times
+#    with a 3-second pause, and OFFLINE is printed only when every
+#    attempt fails.
 param(
   [string]$AppDir,
   [string]$PidFile
@@ -23,6 +28,21 @@ param(
 $ProgressPreference = 'SilentlyContinue'
 $ErrorActionPreference = 'Stop'
 $repo = 'mcuteangel/shiftyar-node'
+
+function Invoke-WithRetry {
+  param([scriptblock]$Action, [int]$MaxAttempts = 6, [int]$DelaySeconds = 3)
+  $attempt = 0
+  while ($true) {
+    $attempt++
+    try {
+      return & $Action
+    } catch {
+      if ($attempt -ge $MaxAttempts) { throw }
+      Start-Sleep -Seconds $DelaySeconds
+    }
+  }
+}
+
 try {
   $parent = Split-Path $AppDir -Parent
   $dataFile = Join-Path $parent 'data\shiftyar.db'
@@ -51,7 +71,7 @@ try {
     }
   }
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-  $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -TimeoutSec 20 -Headers @{ 'User-Agent' = 'shiftyar-launcher' }
+  $rel = Invoke-WithRetry -Action { Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -TimeoutSec 20 -Headers @{ 'User-Agent' = 'shiftyar-launcher' } }
   # A full release may still carry an rc-style tag (v1.2.3-rc.1);
   # compare the numeric prefix only.
   $remoteTag = $rel.tag_name.TrimStart('v')
@@ -102,7 +122,10 @@ try {
   if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
   New-Item $tmp -ItemType Directory | Out-Null
   $zip = Join-Path $tmp 'app.zip'
-  Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip -TimeoutSec 300 -Headers @{ 'User-Agent' = 'shiftyar-launcher' }
+  Invoke-WithRetry -Action {
+    if (Test-Path $zip) { Remove-Item $zip -Force }
+    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip -TimeoutSec 300 -Headers @{ 'User-Agent' = 'shiftyar-launcher' }
+  }
   Expand-Archive -Path $zip -DestinationPath $tmp -Force
   $newApp = Join-Path $tmp 'app'
   if (-not (Test-Path $newApp)) { throw 'package has no app folder' }
