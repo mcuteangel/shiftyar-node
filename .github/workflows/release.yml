@@ -14,9 +14,9 @@ name: Release
 # inside the release PR body, so finalize downloads exactly the
 # artifacts built for this release.
 #
-# Only merges to main can prepare a release: a direct (single-parent)
-# push to main is classified as manual-skip, as is any push whose head
-# commit message contains [skip release].
+# Only merges to main can prepare a release: a direct push to main (one
+# with no merged pull request behind it) is classified as manual-skip,
+# as is any push whose head commit message contains [skip release].
 #
 # Manual releases still work: pushing a v* tag or dispatching the workflow
 # runs the RELEASE job (a draft release for dispatch, a full release for
@@ -105,15 +105,24 @@ jobs:
               echo "Head commit message contains [skip release]."
             } >> "$GITHUB_STEP_SUMMARY"
           else
-            # Only merges to main can prepare a release. A direct push
-            # (single-parent commit) never starts the release flow.
-            parents=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}" --jq '.parents | length')
-            if [ "$parents" -lt 2 ]; then
+            # Only merges to main can prepare a release. A direct push has
+            # no merged pull request behind it, so it never starts the
+            # release flow. This works for merge commits, squash merges
+            # and rebase merges alike: a parent count cannot tell them
+            # apart, since squash and rebase landings have one parent.
+            if ! merged=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls" \
+              --jq '[.[] | select(.base.ref == "main" and .merged_at != null)] | length' \
+              2>api_err2.log); then
+              echo "::error::Failed to query PRs associated with commit ${HEAD_SHA}: $(cat api_err2.log)"
+              echo "::error::Cannot classify this push safely. Re-run the Release workflow once GitHub API access works."
+              exit 1
+            fi
+            if [ "$merged" -eq 0 ]; then
               mode="manual-skip"
               {
                 echo "### ⏭️ Release skipped"
                 echo ""
-                echo "Head commit is not a merge commit; only merges to main prepare a release."
+                echo "Head commit is not associated with a merged pull request to main; only merges to main prepare a release."
               } >> "$GITHUB_STEP_SUMMARY"
             fi
           fi
@@ -317,7 +326,16 @@ jobs:
           NEW_VERSION: ${{ steps.bump.outputs.new_version }}
         run: |
           # Remote check is authoritative even when the local clone lacks refs.
+          # A manual tag can advance past package.json, so an auto-computed
+          # version is releasable only when it is strictly newer than every
+          # existing v* tag. Otherwise the run would publish an older version
+          # after a newer manual one. Treat that exactly like an existing
+          # tag: every downstream step already gates on tag_exists.
+          highest_tag=$(git ls-remote --tags origin 'refs/tags/v*' | grep -v '\^{}$' | sed -E 's|.*refs/tags/v||' | sort -V | tail -n1)
           if [ -n "$(git ls-remote origin "refs/tags/v${NEW_VERSION}")" ]; then
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$highest_tag" ] && [ "$(printf '%s\n%s\n' "$highest_tag" "$NEW_VERSION" | sort -V | tail -n1)" != "$NEW_VERSION" ]; then
+            echo "Version v${NEW_VERSION} is not newer than latest tag v${highest_tag}; skipping release."
             echo "tag_exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "tag_exists=false" >> "$GITHUB_OUTPUT"

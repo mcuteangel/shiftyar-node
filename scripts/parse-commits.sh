@@ -57,7 +57,7 @@ done <<< "$commits"
 # Also check for BREAKING CHANGE in commit body (try both range syntaxes)
 breaking_body=$(git log --pretty=format:"%b" "$BASE_REF".."$HEAD_REF" 2>/dev/null || \
                 git log --pretty=format:"%b" "$BASE_REF"..."$HEAD_REF" 2>/dev/null || echo "")
-if echo "$breaking_body" | grep -q "BREAKING CHANGE"; then
+if echo "$breaking_body" | grep -qE "^BREAKING[- ]CHANGE:"; then
   has_breaking=true
 fi
 

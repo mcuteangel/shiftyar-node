@@ -23,9 +23,9 @@ if echo "$BASE_REF" | grep -qE '^0+$'; then
   exit 0
 fi
 
-changed_files=$(git diff --name-only "$BASE_REF"... "$HEAD_REF" 2>/dev/null || \
-                git diff --name-only "$BASE_REF".."$HEAD_REF" 2>/dev/null || \
-                git diff --name-only "$BASE_REF" "$HEAD_REF" 2>/dev/null || \
+changed_files=$(git diff --name-status "$BASE_REF"... "$HEAD_REF" 2>/dev/null || \
+                git diff --name-status "$BASE_REF".."$HEAD_REF" 2>/dev/null || \
+                git diff --name-status "$BASE_REF" "$HEAD_REF" 2>/dev/null || \
                 echo "")
 
 if [ -z "$changed_files" ]; then
@@ -37,18 +37,22 @@ CHANGED_LIST=$(mktemp "${TMPDIR:-/tmp}/detect-changes.XXXXXX")
 trap 'rm -f "$CHANGED_LIST"' EXIT
 printf '%s\n' "$changed_files" > "$CHANGED_LIST"
 
-# Check if any application files changed
+# Check if any application files changed. The diff uses --name-status, so
+# a rename line carries both the old and the new path. Test every word on
+# the line: a rename out of server/ or web/ must still count, even though
+# only its destination sits outside the app paths.
 has_app_changes=false
-while IFS= read -r file; do
-  [ -z "$file" ] && continue
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
 
-  # Check if this file matches any include pattern
-  case "$file" in
-    server/*|web/*|package.json)
-      has_app_changes=true
-      break
-      ;;
-  esac
+  for file in $line; do
+    case "$file" in
+      server/*|web/*|package.json)
+        has_app_changes=true
+        break 2
+        ;;
+    esac
+  done
 done < "$CHANGED_LIST"
 
 if [ "$has_app_changes" = false ]; then
