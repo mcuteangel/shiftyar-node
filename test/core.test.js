@@ -278,6 +278,24 @@ t('پرسنل اداری: تکمیل خودکار بدون شیفت isOffice ک�
   assert.strictEqual(r.actual, 26 * 360);
 });
 
+t('پرسنل اداری: بدون شیفت isOffice و بدون M هیچ تغییری صادر نمی‌شود (نیت‌پیک CodeAnt روی PR #45)', () => {
+  // وقتی فهرست شیفت نه isOffice دارد نه M، جایگزین معتبری وجود ندارد؛
+  // صدور 'M' باعث رد کل بچ با ۴۰۰ از سوی سرور می‌شد
+  const settings = Object.assign({}, C.defaultSettings(), { officePatterns: [pattern6d] });
+  const p = { id: 'p_off', first: 'کارمند', last: 'اداری', contract: 'official', workType: 'office', officePatternId: 'pat6d' };
+  const a = C.j2d(1405, 7, 1), b = a + 29;
+  const db = {
+    people: [p],
+    shifts: C.defaultShifts().filter((s) => s.code !== 'M'),
+    depts: [],
+    settings,
+    holidays: [],
+    assign: {},
+  };
+  const changes = C.autoAssignOffice(db, { a, b });
+  assert.strictEqual(changes.length, 0);
+});
+
 /* ---------- Issue #19: چندبخشی ---------- */
 t('تفکیک بخش‌ها: ساعت هر بخش از بخشِ خانه می‌آید و جمعِ کل عوض نمی‌شود', () => {
   const a = C.j2d(1405, 8, 1);
