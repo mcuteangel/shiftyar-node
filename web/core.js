@@ -610,7 +610,11 @@
     const hm = holidayMap(S, db.holidays, o.a, o.b);
     const assign = db.assign || {};
     const officeShifts = (db.shifts || []).filter((s) => s.isOffice);
-    const defaultOffCode = officeShifts.length ? officeShifts[0].code : 'OF';
+    // جایگزین M فقط وقتی معتبر است که M واقعاً در فهرست شیفت‌ها باشد؛
+    // وگرنه هیچ کد اداری معتبری وجود ندارد و تغییری صادر نمی‌شود تا
+    // سرور کل بچ را با ۴۰۰ رد نکند (نیت‌پیک CodeAnt روی PR #45).
+    const shiftCodes = new Set((db.shifts || []).map((s) => s.code));
+    const defaultOffCode = officeShifts.length ? officeShifts[0].code : (shiftCodes.has('M') ? 'M' : null);
     const changes = [];
 
     for (const p of people) {
@@ -632,7 +636,8 @@
             const match = officeShifts.find((s) => s.officePattern && s.officePattern.id === offPat.id);
             if (match) code = match.code;
           }
-          changes.push({ pid: p.id, j, code });
+          // کد نامعتبر/تهی هرگز صادر نمی‌شود؛ وگرنه سرور کل بچ را رد می‌کند
+          if (code) changes.push({ pid: p.id, j, code });
         }
       }
     }
