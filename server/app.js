@@ -296,6 +296,20 @@ function createApp(opts = {}) {
     return out;
   }
 
+  /** آنچه حذف یک نفر را از بین می‌برد؛ هر مورد یعنی حذف باید رد شود */
+  function personDeleteBlockers(id) {
+    const out = [];
+    if (q('SELECT 1 FROM users WHERE person_id = ?').get(id)) out.push('حساب کاربری (ابتدا از تب «کاربران» حذفش کنید)');
+    const rq = q('SELECT COUNT(*) AS n FROM requests WHERE person_id = ? OR peer_id = ?').get(id, id).n;
+    if (rq) out.push(`${Core.fa(rq)} درخواست ثبت‌شده`);
+    const as = q('SELECT COUNT(*) AS n FROM assign WHERE person_id = ?').get(id).n;
+    if (as) out.push(`${Core.fa(as)} روز سابقهٔ برنامه (ابتدا برنامه‌هایش را پاک کنید)`);
+    if (q('SELECT 1 FROM prefs WHERE person_id = ?').get(id)) out.push('ترجیحات ذخیره‌شده');
+    const ws = q('SELECT COUNT(*) AS n FROM wishes WHERE person_id = ?').get(id).n;
+    if (ws) out.push(`${Core.fa(ws)} خواستهٔ روز ثبت‌شده`);
+    return out;
+  }
+
   function syncConfig(user, c) {
     return DBM.tx(db, () => {
       const stats = {};
@@ -310,7 +324,17 @@ function createApp(opts = {}) {
       // پرسنل (کد پرسنلی تکراری هنگام جابه‌جایی ممکن است موقتاً برخورد کند؛ ابتدا خالی می‌شود)
       const existing = new Map(q('SELECT id, code FROM people').all().map((r) => [r.id, r.code]));
       const newIds = new Set(c.people.map((p) => p.id));
-      for (const [id] of existing) if (!newIds.has(id)) q('DELETE FROM people WHERE id = ?').run(id);
+      // حذف پرسنل نباید بی‌صدا حساب کاربری، درخواست‌ها، ترجیحات، خواسته‌ها یا سابقهٔ برنامه را (با CASCADE) از بین ببرد (#13)
+      for (const [id] of existing) {
+        if (newIds.has(id)) continue;
+        const blockers = personDeleteBlockers(id);
+        if (blockers.length) {
+          const pr = q('SELECT first, last, code FROM people WHERE id = ?').get(id) || {};
+          const who = `${pr.first || ''} ${pr.last || ''}`.trim() || pr.code || id;
+          throw new HttpError(409, `${who} حذف نمی‌شود چون ${blockers.join('، ')} دارد.`, { personId: id, blockers });
+        }
+        q('DELETE FROM people WHERE id = ?').run(id);
+      }
       q("UPDATE people SET code = ''").run();
       const pIns = q('INSERT INTO people(id, first, last, code, phone, contract, dept_id, extra_depts, work_type, office_pattern_id, pos) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET first = excluded.first, last = excluded.last, code = excluded.code, phone = excluded.phone, contract = excluded.contract, dept_id = excluded.dept_id, extra_depts = excluded.extra_depts, work_type = excluded.work_type, office_pattern_id = excluded.office_pattern_id, pos = excluded.pos');
       c.people.forEach((p, i) => pIns.run(p.id, p.first, p.last, p.code, p.phone, p.contract, p.deptId || null, JSON.stringify(p.extraDeptIds || []), p.workType || 'rotating', p.officePatternId || null, i));

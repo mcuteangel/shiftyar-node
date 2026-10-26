@@ -1365,7 +1365,19 @@ const Store = {
           this.cfgVersion = r.version;
         } catch (e) {
           if (e.status === 0) { this.dirty.cfg = true; throw e; }
-          if (e.status === 400 || e.status === 409 || e.status === 403) {
+          if (e.status === 409 && e.data && e.data.blockers) {
+            // حذف مسدودشده (#13): تعارض نسخه نیست؛ فقط همان فرد از سرور برمی‌گردد و ویرایش‌های محلی دیگر حفظ می‌شوند
+            this.dirty.cfg = true;
+            try {
+              const cur = await this.api('GET', '/api/config');
+              const people = normalizeCfg(cur.cfg).people;
+              const idx = people.findIndex((p) => p.id === e.data.personId);
+              if (idx >= 0 && !DB.cfg.people.some((p) => p.id === e.data.personId)) {
+                DB.cfg.people.splice(Math.min(idx, DB.cfg.people.length), 0, people[idx]);
+              }
+            } catch (_) { /* برگرداندن نشد؛ پیام خطا کافی است */ }
+            reloadMsg = e.message;
+          } else if (e.status === 400 || e.status === 409 || e.status === 403) {
             reloadMsg = e.message + ' آخرین اطلاعات سرور بارگذاری شد.';
             await this.loadConfigServer();
           } else throw e;
@@ -1388,8 +1400,8 @@ const Store = {
           }
         }
       }
-      this.err = '';
-      this.setStatus('saved');
+      if (this.dirty.cfg) { this.err = reloadMsg; this.setStatus('error'); }
+      else { this.err = ''; this.setStatus('saved'); }
     } catch (e) {
       if (!ME.user) return;
       this.fail(e);
@@ -1732,7 +1744,7 @@ function viewPeople() {
         const wtLabel = isOff ? `<span class="pill" style="background:#e0f2fe;color:#0369a1;border-color:#bae6fd" title="${esc(pat ? pat.name : '')}">اداری</span>` : '<span class="pill">در گردش</span>';
         const deptCell = personDepts(p).map((id) => { const d = dept(id); return d ? `<span class="dot" style="--dc:${esc(d.color)}"></span>${esc(d.name)}` : ''; }).filter(Boolean).join('، ') || '—';
         return `<tr><td>${esc(p.code || '—')}</td><td>${esc(pname(p))}</td><td>${deptCell}</td><td>${wtLabel}</td><td><span class="pill">${CONTRACTS[p.contract] || ''}</span></td><td dir="ltr" style="text-align:right">${esc(p.phone || '—')}</td>
-        <td><button class="btn sm" data-act="editperson" data-id="${p.id}">ویرایش</button> <button class="btn sm danger" data-act="delperson" data-id="${p.id}" data-confirm="حذف با برنامه‌هایش؟">حذف</button></td></tr>`;
+        <td><button class="btn sm" data-act="editperson" data-id="${p.id}">ویرایش</button> <button class="btn sm danger" data-act="delperson" data-id="${p.id}" data-confirm="${isServer() ? 'حذف شود؟ اگر حساب کاربری، درخواست، ترجیحات، خواسته یا سابقهٔ برنامه داشته باشد حذف نمی‌شود' : 'حذف با همهٔ برنامه‌هایش؟ قابل بازگشت نیست'}">حذف</button></td></tr>`;
       }).join('')}
       </tbody></table></div>`
     : `<div class="panel empty"><b>پرسنلی ثبت نشده</b><span>فرم بالا را پر کنید.</span></div>`;
