@@ -208,21 +208,23 @@ t('پیشنهاد خودکار هوشمند: درخواست روز، آف، تر
   assert.strictEqual(r2.wishReport[0].ok, false);
 });
 
+// الگوی اداری ۶ روز در هفته ۷ تا ۱۳، مشترک بین آزمون‌های پرسنل اداری
+const pattern6d = {
+  id: 'pat6d',
+  name: '۶ روز در هفته ۷ تا ۱۳',
+  days: {
+    0: { active: true, s: '07:00', e: '13:00' },
+    1: { active: true, s: '07:00', e: '13:00' },
+    2: { active: true, s: '07:00', e: '13:00' },
+    3: { active: true, s: '07:00', e: '13:00' },
+    4: { active: true, s: '07:00', e: '13:00' },
+    5: { active: true, s: '07:00', e: '13:00' },
+    6: { active: false, s: '07:00', e: '13:00' },
+  },
+};
+
 t('پرسنل اداری: محاسبه موظفی پویا و انتساب خودکار شیفت اداری', () => {
   // پاییز و زمستان: شنبه تا پنجشنبه ۶ روز در هفته ۷ تا ۱۳ (۳۶۰ دقیقه در هر روز کاری)
-  const pattern6d = {
-    id: 'pat6d',
-    name: '۶ روز در هفته ۷ تا ۱۳',
-    days: {
-      0: { active: true, s: '07:00', e: '13:00' },
-      1: { active: true, s: '07:00', e: '13:00' },
-      2: { active: true, s: '07:00', e: '13:00' },
-      3: { active: true, s: '07:00', e: '13:00' },
-      4: { active: true, s: '07:00', e: '13:00' },
-      5: { active: true, s: '07:00', e: '13:00' },
-      6: { active: false, s: '07:00', e: '13:00' },
-    },
-  };
   const settings = Object.assign({}, C.defaultSettings(), { officePatterns: [pattern6d] });
   const offShift = { code: 'OF', name: 'اداری', isOffice: true, kind: 'simple', segs: [{ o: 0, s: '07:00', e: '13:00' }] };
   const shifts = C.defaultShifts().concat([offShift]);
@@ -260,19 +262,6 @@ t('پرسنل اداری: تکمیل خودکار بدون شیفت isOffice ک�
   // بدون هیچ شیفت isOffice، fallback قبلی 'OF' بود که سرور رد می‌کند
   // (OF نه در جدول شیفت‌هاست نه در SPECIAL)؛ حالا 'M' می‌دهد که هم معتبر است
   // هم در محاسبه‌ی ساعات اداری نشان‌گر اداری حساب می‌شود
-  const pattern6d = {
-    id: 'pat6d',
-    name: '۶ روز در هفته ۷ تا ۱۳',
-    days: {
-      0: { active: true, s: '07:00', e: '13:00' },
-      1: { active: true, s: '07:00', e: '13:00' },
-      2: { active: true, s: '07:00', e: '13:00' },
-      3: { active: true, s: '07:00', e: '13:00' },
-      4: { active: true, s: '07:00', e: '13:00' },
-      5: { active: true, s: '07:00', e: '13:00' },
-      6: { active: false, s: '07:00', e: '13:00' },
-    },
-  };
   const settings = Object.assign({}, C.defaultSettings(), { officePatterns: [pattern6d] });
   const p = { id: 'p_off', first: 'کارمند', last: 'اداری', contract: 'official', workType: 'office', officePatternId: 'pat6d' };
   const a = C.j2d(1405, 7, 1), b = a + 29;
