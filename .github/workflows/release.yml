@@ -197,13 +197,13 @@ jobs:
               echo "::warning::No prepare run marker on PR #${PR_NUMBER}; using latest artifact named ${name}."
               list_url="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${name}&per_page=100"
             fi
-            id=$(curl -sfL -H "Authorization: Bearer $GH_TOKEN" "$list_url" | \
+            id=$(curl -sfL --proto '=https' -H "Authorization: Bearer $GH_TOKEN" "$list_url" | \
               jq -r '[.artifacts[] | select(.expired == false)][0].id // empty')
             if [ -z "$id" ]; then
               echo "::error::CI artifact '${name}' not found (or expired). Cannot publish v${VERSION} without its build artifacts."
               exit 1
             fi
-            curl -sfL -H "Authorization: Bearer $GH_TOKEN" \
+            curl -sfL --proto '=https' -H "Authorization: Bearer $GH_TOKEN" \
               "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}/zip" \
               -o artifact.zip
             unzip -q artifact.zip -d "$dest"
