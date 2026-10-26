@@ -610,7 +610,7 @@
     const hm = holidayMap(S, db.holidays, o.a, o.b);
     const assign = db.assign || {};
     const officeShifts = (db.shifts || []).filter((s) => s.isOffice);
-    const defaultOffCode = officeShifts.length ? officeShifts[0].code : 'OF';
+    const defaultOffCode = officeShifts.length ? officeShifts[0].code : 'M';
     const changes = [];
 
     for (const p of people) {

@@ -256,6 +256,39 @@ t('پرسنل اداری: محاسبه موظفی پویا و انتساب خو�
   assert.strictEqual(r2.overtime, 0);
 });
 
+t('پرسنل اداری: تکمیل خودکار بدون شیفت isOffice کد معتبر می‌دهد (#43)', () => {
+  // بدون هیچ شیفت isOffice، fallback قبلی 'OF' بود که سرور رد می‌کند
+  // (OF نه در جدول شیفت‌هاست نه در SPECIAL)؛ حالا 'M' می‌دهد که هم معتبر است
+  // هم در محاسبه‌ی ساعات اداری نشان‌گر اداری حساب می‌شود
+  const pattern6d = {
+    id: 'pat6d',
+    name: '۶ روز در هفته ۷ تا ۱۳',
+    days: {
+      0: { active: true, s: '07:00', e: '13:00' },
+      1: { active: true, s: '07:00', e: '13:00' },
+      2: { active: true, s: '07:00', e: '13:00' },
+      3: { active: true, s: '07:00', e: '13:00' },
+      4: { active: true, s: '07:00', e: '13:00' },
+      5: { active: true, s: '07:00', e: '13:00' },
+      6: { active: false, s: '07:00', e: '13:00' },
+    },
+  };
+  const settings = Object.assign({}, C.defaultSettings(), { officePatterns: [pattern6d] });
+  const p = { id: 'p_off', first: 'کارمند', last: 'اداری', contract: 'official', workType: 'office', officePatternId: 'pat6d' };
+  const a = C.j2d(1405, 7, 1), b = a + 29;
+  const db = { settings, shifts: C.defaultShifts(), holidays: C.defaultHolidays(), people: [p], assign: {} };
+  const autoChanges = C.autoAssignOffice(db, { a, b });
+  assert.strictEqual(autoChanges.length, 26);
+  assert.ok(autoChanges.every((ch) => ch.pid === 'p_off' && ch.code === 'M'));
+  assert.ok(autoChanges.every((ch) => C.defaultShifts().some((s) => s.code === ch.code) || C.SPECIAL[ch.code]));
+  // ساعات اداری از روی الگو محاسبه می‌شود، نه از روی شیفت M
+  db.assign[p.id] = {};
+  for (const ch of autoChanges) db.assign[p.id][ch.j] = ch.code;
+  const r = C.computeRange(db, p, a, b);
+  assert.strictEqual(r.duty, 26 * 360);
+  assert.strictEqual(r.actual, 26 * 360);
+});
+
 /* ---------- Issue #19: چندبخشی ---------- */
 t('تفکیک بخش‌ها: ساعت هر بخش از بخشِ خانه می‌آید و جمعِ کل عوض نمی‌شود', () => {
   const a = C.j2d(1405, 8, 1);
