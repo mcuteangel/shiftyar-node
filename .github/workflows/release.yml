@@ -4,8 +4,8 @@ name: Release
 #
 # A merge to main that changes application code runs the PREPARE job: it
 # computes the next version from conventional commits, runs tests, builds
-# the launcher packages, pushes a release/vX.Y.Z branch and opens an
-# auto-merge Pull Request back to main. This workflow NEVER pushes to main
+# the launcher packages, pushes a release/vX.Y.Z branch and opens a
+# Mergify-queued Pull Request back to main. This workflow NEVER pushes to main
 # directly.
 #
 # When the release PR merges, the landing push on main runs the FINALIZE
@@ -22,9 +22,14 @@ name: Release
 # runs the RELEASE job (a draft release for dispatch, a full release for
 # a tag push), exactly as before.
 #
-# Required repository setting: "Allow auto-merge" must be enabled
-# (Settings > General > Pull Requests). Without it the prepare run ends
-# with a clear error instead of bypassing protections.
+# Required repository settings: "Allow GitHub Actions to create and
+# approve pull requests" (Settings > Actions > General) so prepare can
+# open the release PR, and Mergify installed with queueing enabled for
+# the repo. The release PR is merged by Mergify (app token), NOT by
+# github-actions[bot] auto-merge: pushes by github-actions[bot] do NOT
+# trigger a new workflow run, so a bot-merged release PR would never
+# run FINALIZE (seen on v0.2.1: PR #46 auto-merged, no finalize run,
+# release completed manually).
 
 on:
   push:
@@ -263,7 +268,7 @@ jobs:
 
   prepare:
     # Normal application change landed on main: build a candidate release
-    # and hand it over as an auto-merge PR.
+    # and hand it over as a Mergify-queued PR.
     needs: classify
     if: needs.classify.outputs.mode == 'prepare'
     runs-on: ubuntu-latest
@@ -271,7 +276,7 @@ jobs:
     permissions:
       # Push the release branch.
       contents: write
-      # Create the release PR, stamp its body, enable auto-merge.
+      # Create the release PR, stamp its body, queue it with Mergify.
       pull-requests: write
       # Upload the prepared artifacts.
       actions: write
@@ -417,7 +422,7 @@ jobs:
           # edit) so it survives even if the separate stamping step is skipped
           # or fails. The dedicated 'Stamp release run into PR body' step below
           # re-stamps a *reused* PR; it is decoupled (continue-on-error) so a
-          # transient API failure there can never block auto-merge.
+          # transient API failure there can never block the Mergify queue step.
           marker="<!-- shiftyar-release-run:${RUN_ID} -->"
 
           # Commit the release state on the dedicated branch. The branch tip
@@ -495,9 +500,9 @@ jobs:
 
       - name: Stamp release run into PR body
         # Decoupled from PR creation so a transient API failure (e.g. a missing
-        # token scope) can NEVER block auto-merge. The marker is already written
+        # token scope) can NEVER block the Mergify queue step. The marker is already written
         # into the body at creation time; this re-stamp keeps a *reused* PR
-        # pointed at the latest run. continue-on-error guarantees the auto-merge
+        # pointed at the latest run. continue-on-error guarantees the Mergify queue
         # step below still runs even if this edit fails.
         id: stamp
         if: steps.detect.outputs.release_needed == 'true' && steps.check_tag.outputs.tag_exists == 'false'
@@ -514,26 +519,31 @@ jobs:
           printf '%s\n%s\n' "$(cat pr-body-clean.md)" "$marker" > pr-body-stamped.md
           gh pr edit "$PR_NUMBER" --body-file pr-body-stamped.md
 
-      - name: Enable auto-merge on release PR
+      - name: Queue release PR with Mergify
         if: steps.detect.outputs.release_needed == 'true' && steps.check_tag.outputs.tag_exists == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.publish.outputs.pr_number }}
         run: |
-          # Idempotent: do not touch a PR that already has auto-merge set.
-          already=$(gh pr view "$PR_NUMBER" --json autoMergeRequest \
-            --jq '.autoMergeRequest != null')
-          if [ "$already" = "true" ]; then
-            echo "Auto-merge already enabled on PR #${PR_NUMBER}."
+          # The release PR MUST be merged by Mergify, not by
+          # github-actions[bot] auto-merge: pushes by github-actions[bot]
+          # do not trigger a new workflow run, so a bot-merged release PR
+          # would never run FINALIZE (v0.2.1: PR #46 auto-merged, no
+          # finalize run). Mergify merges with its own app token, and
+          # that push does trigger FINALIZE.
+          # Idempotent: do not queue twice on re-runs.
+          if gh pr view "$PR_NUMBER" --json comments \
+            --jq '.comments[] | select(.author.login == "github-actions[bot]") | .body' \
+            | grep -q '@mergifyio queue'; then
+            echo "PR #${PR_NUMBER} already queued with Mergify."
             exit 0
           fi
-          if ! gh pr merge "$PR_NUMBER" --auto --merge; then
-            echo "::error::Failed to enable auto-merge on PR #${PR_NUMBER}."
-            echo "Most likely cause: 'Allow auto-merge' is disabled in repository Settings > General > Pull Requests." >&2
-            echo "Enable it once; do NOT work around by merging manually or pushing to main." >&2
+          if ! gh pr comment "$PR_NUMBER" --body '@mergifyio queue'; then
+            echo "::error::Failed to queue PR #${PR_NUMBER} with Mergify." >&2
+            echo "Mergify must be installed with queueing enabled for this repo; do NOT work around by merging manually or pushing to main." >&2
             exit 1
           fi
-          echo "Auto-merge enabled on PR #${PR_NUMBER}; GitHub will merge after required checks pass."
+          echo "PR #${PR_NUMBER} queued with Mergify; it merges after required checks pass, and that merge triggers FINALIZE."
 
       - name: Summary - release prepared
         if: steps.detect.outputs.release_needed == 'true' && steps.check_tag.outputs.tag_exists == 'false'
@@ -549,7 +559,7 @@ jobs:
             echo "|------|-------|"
             echo "| Version | ${NEW_VERSION} |"
             echo "| Bump type | ${BUMP_TYPE} |"
-            echo "| PR | #${PR_NUMBER} (auto-merge enabled) |"
+            echo "| PR | #${PR_NUMBER} (queued with Mergify) |"
             echo "| Tag | created after PR merges |"
           } >> "$GITHUB_STEP_SUMMARY"
 
