@@ -661,7 +661,7 @@ function viewPeople() {
         const wtLabel = isOff ? `<span class="pill" style="background:#e0f2fe;color:#0369a1;border-color:#bae6fd" title="${esc(pat ? pat.name : '')}">اداری</span>` : '<span class="pill">در گردش</span>';
         const deptCell = personDepts(p).map((id) => { const d = dept(id); return d ? `<span class="dot" style="--dc:${esc(d.color)}"></span>${esc(d.name)}` : ''; }).filter(Boolean).join('، ') || '—';
         return `<tr><td>${esc(p.code || '—')}</td><td>${esc(pname(p))}</td><td>${deptCell}</td><td>${wtLabel}</td><td><span class="pill">${CONTRACTS[p.contract] || ''}</span></td><td dir="ltr" style="text-align:right">${esc(p.phone || '—')}</td>
-        <td><button class="btn sm" data-act="editperson" data-id="${p.id}">ویرایش</button> <button class="btn sm danger" data-act="delperson" data-id="${p.id}" data-confirm="حذف با برنامه‌هایش؟">حذف</button></td></tr>`;
+        <td><button class="btn sm" data-act="editperson" data-id="${p.id}">ویرایش</button> <button class="btn sm danger" data-act="delperson" data-id="${p.id}" data-confirm="${isServer() ? 'حذف شود؟ اگر حساب کاربری، درخواست یا سابقهٔ برنامه داشته باشد حذف نمی‌شود' : 'حذف با همهٔ برنامه‌هایش؟ قابل بازگشت نیست'}">حذف</button></td></tr>`;
       }).join('')}
       </tbody></table></div>`
     : `<div class="panel empty"><b>پرسنلی ثبت نشده</b><span>فرم بالا را پر کنید.</span></div>`;

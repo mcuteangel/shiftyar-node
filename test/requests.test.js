@@ -197,3 +197,18 @@ test('ترجیحات و درخواست روز: ثبت، دسترسی و اعتب
   assert.equal((await sA.req('DELETE', `/api/wishes/${id}`)).status, 200);
   assert.equal((await sA.req('DELETE', `/api/wishes/${id}`)).status, 404);
 });
+
+test('حذف پرسنل دارای درخواست رد می‌شود و درخواست‌ها می‌مانند (#13)', async () => {
+  const g = (await admin.get('/api/config')).data;
+  const before = (await admin.get('/api/requests')).data;
+  const mine = before.requests.filter((x) => x.personId === 'p1' || x.peerId === 'p1');
+  assert.ok(mine.length > 0, 'p1 در تست‌های قبلی درخواست دارد');
+  const fewer = Object.assign({}, g.cfg, { people: g.cfg.people.filter((p) => p.id !== 'p1') });
+  const r = await admin.put('/api/config', { version: g.version, cfg: fewer });
+  assert.equal(r.status, 409, JSON.stringify(r.data));
+  assert.match(r.data.error, /درخواست ثبت‌شده/);
+  assert.ok((await admin.get('/api/config')).data.cfg.people.some((p) => p.id === 'p1'));
+  const after = (await admin.get('/api/requests')).data;
+  const mine2 = after.requests.filter((x) => x.personId === 'p1' || x.peerId === 'p1');
+  assert.equal(mine2.length, mine.length, 'درخواست‌ها حذف نشدند');
+});

@@ -218,17 +218,40 @@ test('پیکربندی: حذف شیفتِ در حال استفاده ممکن ن
   r = await admin.put('/api/config', { version: ver, cfg: without });
   assert.equal(r.status, 409);
   assert.match(r.data.error, /N/);
-  // پرسنل با برنامه حذف شود → برنامه‌اش هم حذف می‌شود
+  // حذف پرسنل نباید بی‌صدا حساب، درخواست‌ها و سابقهٔ برنامه را از بین ببرد (#13)
   const fewer = Object.assign({}, cfg, { people: cfg.people.filter((p) => p.id !== 'p2') });
   r = await admin.put('/api/config', { version: ver, cfg: fewer });
-  assert.equal(r.status, 200);
-  ver = r.data.version;
+  assert.equal(r.status, 409, 'فرد دارای حساب و سابقه حذف نمی‌شود');
+  assert.match(r.data.error, /مریم کریمی/);
+  assert.match(r.data.error, /حساب کاربری/);
+  assert.match(r.data.error, /سابقهٔ برنامه/);
+  r = await admin.get('/api/config');
+  assert.equal(r.data.version, ver, 'پیکربندی دست نخورد');
+  assert.ok(r.data.cfg.people.some((p) => p.id === 'p2'), 'فرد باقی ماند');
   r = await admin.get(`/api/assign?from=${D(7, 1)}&to=${D(7, 30)}`);
-  assert.equal(r.data.assign.p2, undefined);
+  assert.equal(r.data.assign.p2[D(7, 5)], 'SK', 'برنامه‌اش باقی ماند');
   r = await admin.get('/api/users');
-  assert.ok(!r.data.users.some((u) => u.code === '1002'), 'حساب فرد حذف‌شده هم حذف می‌شود');
+  const acct = r.data.users.find((u) => u.code === '1002');
+  assert.ok(acct, 'حسابش باقی ماند');
   r = await staffC.get('/api/me');
-  assert.equal(r.status, 401, 'نشست آن حساب بی‌اعتبار شد');
+  assert.equal(r.status, 200, 'نشستش هم معتبر ماند');
+  // فقط حساب حذف شود: هنوز سابقهٔ برنامه مانع است و پیام دیگر از حساب نمی‌گوید
+  r = await admin.del('/api/users/' + acct.id);
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  r = await admin.put('/api/config', { version: ver, cfg: fewer });
+  assert.equal(r.status, 409);
+  assert.doesNotMatch(r.data.error, /حساب کاربری/);
+  assert.match(r.data.error, /سابقهٔ برنامه/);
+  // پس از پاک‌کردن برنامه‌اش، حذف انجام می‌شود
+  r = await admin.post('/api/assign', { changes: [{ pid: 'p2', j: D(7, 5), code: null }] });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  r = await admin.put('/api/config', { version: ver, cfg: fewer });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  ver = r.data.version;
+  r = await admin.get('/api/config');
+  assert.ok(!r.data.cfg.people.some((p) => p.id === 'p2'));
+  r = await staffC.get('/api/me');
+  assert.equal(r.status, 401, 'نشست حساب حذف‌شده بی‌اعتبار است');
 });
 
 test('مدیریت حساب: آخرین مدیر، غیرفعال‌سازی، بازنشانی', async () => {
