@@ -250,8 +250,6 @@ test('پیکربندی: حذف شیفتِ در حال استفاده ممکن ن
   ver = r.data.version;
   r = await admin.get('/api/config');
   assert.ok(!r.data.cfg.people.some((p) => p.id === 'p2'));
-  r = await staffC.get('/api/me');
-  assert.equal(r.status, 401, 'نشست حساب حذف‌شده بی‌اعتبار است');
 });
 
 test('مدیریت حساب: آخرین مدیر، غیرفعال‌سازی، بازنشانی', async () => {

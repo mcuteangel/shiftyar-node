@@ -199,10 +199,13 @@ test('ترجیحات و درخواست روز: ثبت، دسترسی و اعتب
 });
 
 test('حذف پرسنل دارای درخواست رد می‌شود و درخواست‌ها می‌مانند (#13)', async () => {
+  // درخواست تازه برای p1 تا آزمون مستقل از آزمون‌های قبلی باشد
+  const mk = await sA.post('/api/requests', { kind: 'leave', code: 'LV', from: T + 60, to: T + 61 });
+  assert.equal(mk.status, 200, JSON.stringify(mk.data));
   const g = (await admin.get('/api/config')).data;
   const before = (await admin.get('/api/requests')).data;
   const mine = before.requests.filter((x) => x.personId === 'p1' || x.peerId === 'p1');
-  assert.ok(mine.length > 0, 'p1 در تست‌های قبلی درخواست دارد');
+  assert.ok(mine.length > 0, 'p1 درخواست دارد');
   const fewer = Object.assign({}, g.cfg, { people: g.cfg.people.filter((p) => p.id !== 'p1') });
   const r = await admin.put('/api/config', { version: g.version, cfg: fewer });
   assert.equal(r.status, 409, JSON.stringify(r.data));
@@ -211,4 +214,25 @@ test('حذف پرسنل دارای درخواست رد می‌شود و درخو
   const after = (await admin.get('/api/requests')).data;
   const mine2 = after.requests.filter((x) => x.personId === 'p1' || x.peerId === 'p1');
   assert.equal(mine2.length, mine.length, 'درخواست‌ها حذف نشدند');
+});
+
+test('حذف پرسنل دارای ترجیحات/خواسته رد می‌شود و آن‌ها می‌مانند (#13)', async () => {
+  const g = (await admin.get('/api/config')).data;
+  const person = { id: 'p9', first: 'تست', last: 'نه', code: '9', phone: '', contract: 'company', deptId: 'd1' };
+  let r = await admin.put('/api/config', { version: g.version, cfg: Object.assign({}, g.cfg, { people: [...g.cfg.people, person] }) });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  r = await admin.put('/api/prefs/p9', { shift: { M: 1 }, ot: 'normal' });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  r = await admin.post('/api/wishes', { pid: 'p9', day: T + 40, kind: 'off' });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const g2 = (await admin.get('/api/config')).data;
+  const fewer = Object.assign({}, g2.cfg, { people: g2.cfg.people.filter((p) => p.id !== 'p9') });
+  r = await admin.put('/api/config', { version: g2.version, cfg: fewer });
+  assert.equal(r.status, 409, JSON.stringify(r.data));
+  assert.match(r.data.error, /ترجیحات/);
+  assert.match(r.data.error, /خواسته/);
+  assert.ok((await admin.get('/api/config')).data.cfg.people.some((p) => p.id === 'p9'), 'فرد باقی ماند');
+  const prefs = (await admin.get('/api/prefs')).data;
+  assert.ok(prefs.prefs.p9, 'ترجیحات باقی ماند');
+  assert.ok(prefs.wishes.some((w) => w.pid === 'p9'), 'خواسته باقی ماند');
 });

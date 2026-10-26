@@ -304,6 +304,9 @@ function createApp(opts = {}) {
     if (rq) out.push(`${Core.fa(rq)} درخواست ثبت‌شده`);
     const as = q('SELECT COUNT(*) AS n FROM assign WHERE person_id = ?').get(id).n;
     if (as) out.push(`${Core.fa(as)} روز سابقهٔ برنامه (ابتدا برنامه‌هایش را پاک کنید)`);
+    if (q('SELECT 1 FROM prefs WHERE person_id = ?').get(id)) out.push('ترجیحات ذخیره‌شده');
+    const ws = q('SELECT COUNT(*) AS n FROM wishes WHERE person_id = ?').get(id).n;
+    if (ws) out.push(`${Core.fa(ws)} خواستهٔ روز ثبت‌شده`);
     return out;
   }
 
@@ -321,7 +324,7 @@ function createApp(opts = {}) {
       // پرسنل (کد پرسنلی تکراری هنگام جابه‌جایی ممکن است موقتاً برخورد کند؛ ابتدا خالی می‌شود)
       const existing = new Map(q('SELECT id, code FROM people').all().map((r) => [r.id, r.code]));
       const newIds = new Set(c.people.map((p) => p.id));
-      // حذف پرسنل نباید بی‌صدا حساب کاربری، درخواست‌ها یا سابقهٔ برنامه را (با CASCADE) از بین ببرد (#13)
+      // حذف پرسنل نباید بی‌صدا حساب کاربری، درخواست‌ها، ترجیحات، خواسته‌ها یا سابقهٔ برنامه را (با CASCADE) از بین ببرد (#13)
       for (const [id] of existing) {
         if (newIds.has(id)) continue;
         const blockers = personDeleteBlockers(id);
