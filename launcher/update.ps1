@@ -16,6 +16,17 @@
 #    a lock file and each run uses its own per-process temp dir.
 #  - Prints exactly one word: OK, UPDATED, NOASSET, DBFAIL, or OFFLINE.
 #  - Any other failure prints OFFLINE and never blocks the server start.
+#  - Secure connections on some networks fail intermittently (TLS
+#    handshakes aborted mid-flight, succeeding after a few retries):
+#    the release check and the download are each retried up to 6 times
+#    with a 3-second pause. Permanent HTTP errors (e.g. 403/404) are
+#    not retried. OFFLINE is printed when the update cannot proceed:
+#    after every retry attempt fails, or when a later local step fails.
+#  - app\ is never swapped while a server runs: before the swap, the
+#    updater waits briefly for port 3000 to free up and for any
+#    PID-file server to exit, and gives up the update if either is
+#    still busy (a second launcher may have started one while this
+#    updater held the lock).
 param(
   [string]$AppDir,
   [string]$PidFile
@@ -23,6 +34,32 @@ param(
 $ProgressPreference = 'SilentlyContinue'
 $ErrorActionPreference = 'Stop'
 $repo = 'mcuteangel/shiftyar-node'
+
+function Invoke-WithRetry {
+  param([scriptblock]$Action, [int]$MaxAttempts = 6, [int]$DelaySeconds = 3)
+  $attempt = 0
+  while ($true) {
+    $attempt++
+    try {
+      return & $Action
+    } catch {
+      if ($attempt -ge $MaxAttempts) { throw }
+      # Permanent HTTP errors (e.g. GitHub 403 rate-limit, 404) will not
+      # clear up by retrying: fail fast instead of wasting the quota.
+      # Retry only when there is no HTTP response (network/TLS failure)
+      # or the status is 408, 429, or 5xx.
+      $status = $null
+      try {
+        $ex = $_.Exception
+        if ($ex.Response -and $ex.Response.StatusCode) { $status = [int]$ex.Response.StatusCode }
+        elseif ($ex.StatusCode) { $status = [int]$ex.StatusCode }
+      } catch { }
+      if ($status -and $status -ne 408 -and $status -ne 429 -and ($status -lt 500 -or $status -gt 599)) { throw }
+      Start-Sleep -Seconds $DelaySeconds
+    }
+  }
+}
+
 try {
   $parent = Split-Path $AppDir -Parent
   $dataFile = Join-Path $parent 'data\shiftyar.db'
@@ -51,7 +88,7 @@ try {
     }
   }
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-  $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -TimeoutSec 20 -Headers @{ 'User-Agent' = 'shiftyar-launcher' }
+  $rel = Invoke-WithRetry -Action { Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -TimeoutSec 20 -Headers @{ 'User-Agent' = 'shiftyar-launcher' } }
   # A full release may still carry an rc-style tag (v1.2.3-rc.1);
   # compare the numeric prefix only.
   $remoteTag = $rel.tag_name.TrimStart('v')
@@ -102,10 +139,38 @@ try {
   if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
   New-Item $tmp -ItemType Directory | Out-Null
   $zip = Join-Path $tmp 'app.zip'
-  Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip -TimeoutSec 300 -Headers @{ 'User-Agent' = 'shiftyar-launcher' }
+  Invoke-WithRetry -Action {
+    if (Test-Path $zip) { Remove-Item $zip -Force }
+    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zip -TimeoutSec 300 -Headers @{ 'User-Agent' = 'shiftyar-launcher' }
+  }
   Expand-Archive -Path $zip -DestinationPath $tmp -Force
   $newApp = Join-Path $tmp 'app'
   if (-not (Test-Path $newApp)) { throw 'package has no app folder' }
+  # A second launcher may have started a server while this updater held
+  # the lock; never swap app\ under a running server. Wait briefly for
+  # the port to free up and for any PID-file server to exit, then give
+  # up the update (the local copy keeps running).
+  $busy = $true
+  for ($i = 0; $i -lt 5 -and $busy; $i++) {
+    $busy = $false
+    try {
+      if (Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction Stop) { $busy = $true }
+    } catch { }
+    if (-not $busy -and (Test-Path $PidFile)) {
+      $rawPid = (Get-Content $PidFile -Raw).Trim()
+      $procId = 0
+      if ([int]::TryParse($rawPid, [ref]$procId)) {
+        $p = Get-Process -Id $procId -ErrorAction SilentlyContinue
+        if ($p -and $p.ProcessName -eq 'node') {
+          $cmdline = $null
+          try { $cmdline = (Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction Stop).CommandLine } catch { }
+          if ($cmdline -and $cmdline.Contains('server\index.js')) { $busy = $true }
+        }
+      }
+    }
+    if ($busy) { Start-Sleep -Seconds 2 }
+  }
+  if ($busy) { Write-Output 'OFFLINE'; exit 0 }
   $oldApp = Join-Path $parent 'app_old'
   if (Test-Path $oldApp) { Remove-Item $oldApp -Recurse -Force }
   $moved = $false
