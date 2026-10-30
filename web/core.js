@@ -605,10 +605,12 @@
 
   /** پر کردن خودکار شیفت برای پرسنل اداری در یک بازه زمانی */
   function autoAssignOffice(db, o) {
-    // نمایِ یک بخش (#21): فقط پرسنل اداریِ همان بخش (اصلی یا فرعی) و تگِ بخشِ نما روی خانه‌های جدید —
-    // هم‌سو با پیشنهاد خودکار؛ بدون dept رفتار پیشین حفظ می‌شود (همهٔ پرسنل، بخشِ اصلی)
+    // محدود به نمای فعلی (#21، نیت‌پیک CodeAnt روی PR #67): «dept» یعنی فقط پرسنل اداریِ همان بخش
+    // (اصلی یا فرعی) با تگِ بخشِ نما روی خانه‌های جدید؛ «noDept» یعنی فقط پرسنل بدون بخش («بدون بخش»).
+    // بدون هیچ‌کدام رفتار پیشین حفظ می‌شود (همهٔ پرسنل، بخشِ اصلی) — هم‌سو با پیشنهاد خودکار
     let people = (db.people || []).filter((p) => p.workType === 'office');
-    if (o.dept) people = people.filter((p) => personDepts(p).includes(o.dept));
+    if (o.noDept) people = people.filter((p) => !personDepts(p).length);
+    else if (o.dept) people = people.filter((p) => personDepts(p).includes(o.dept));
     const S = db.settings;
     const hm = holidayMap(S, db.holidays, o.a, o.b);
     const assign = db.assign || {};

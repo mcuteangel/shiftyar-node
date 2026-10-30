@@ -284,18 +284,24 @@ t('تکمیل خودکار اداری: در نمای بخش فقط پرسنل ه
   const pMain = { id: 'p_m', first: 'الف', last: 'اداری', contract: 'official', workType: 'office', officePatternId: 'pat6d', deptId: 'd2' };
   const pExtra = { id: 'p_x', first: 'ب', last: 'اداری', contract: 'official', workType: 'office', officePatternId: 'pat6d', deptId: 'd1', extraDeptIds: ['d2'] };
   const pOut = { id: 'p_o', first: 'ج', last: 'اداری', contract: 'official', workType: 'office', officePatternId: 'pat6d', deptId: 'd1' };
-  const db = { settings, shifts, holidays: C.defaultHolidays(), people: [pMain, pExtra, pOut], assign: {} };
+  const pNone = { id: 'p_n', first: 'د', last: 'اداری', contract: 'official', workType: 'office', officePatternId: 'pat6d' };
+  const db = { settings, shifts, holidays: C.defaultHolidays(), people: [pMain, pExtra, pOut, pNone], assign: {} };
   const a = C.j2d(1405, 7, 1), b = a + 29; // مهر ۱۴۰۵: ۲۶ روز کاری
 
-  // نمای «همه»: هر سه نفر پر می‌شوند و هیچ تگِ بخشی صادر نمی‌شود (رفتار پیشین)
+  // نمای «همه»: هر چهار نفر پر می‌شوند و هیچ تگِ بخشی صادر نمی‌شود (رفتار پیشین)
   const all = C.autoAssignOffice(db, { a, b });
-  assert.strictEqual(all.length, 3 * 26);
+  assert.strictEqual(all.length, 4 * 26);
   assert.ok(all.every((ch) => ch.deptId === undefined), 'بدون فیلتر بخش، تگ بخشی نیست');
 
   // نمای بخش d2: فقط عضوهای d2 (اصلی یا فرعی) و خانه‌ها با تگِ d2
   const d2 = C.autoAssignOffice(db, { a, b, dept: 'd2' });
   assert.strictEqual(d2.length, 2 * 26);
   assert.ok(d2.every((ch) => (ch.pid === 'p_m' || ch.pid === 'p_x') && ch.deptId === 'd2'));
+
+  // نمای «بدون بخش»: فقط پرسنل بدون بخش، بدون تگِ بخشی (نیت‌پیک CodeAnt روی PR #67)
+  const none = C.autoAssignOffice(db, { a, b, noDept: true });
+  assert.strictEqual(none.length, 26);
+  assert.ok(none.every((ch) => ch.pid === 'p_n' && ch.deptId === undefined));
 
   // نمای بخشی که هیچ‌کدام عضو آن نیستند: هیچ تغییری
   assert.strictEqual(C.autoAssignOffice(db, { a, b, dept: 'd9' }).length, 0);

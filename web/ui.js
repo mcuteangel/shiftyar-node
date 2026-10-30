@@ -1618,9 +1618,9 @@ document.addEventListener('click', async (e) => {
     }
     case 'autoassignoffice': {
       const m = monthInfo();
-      // در نمای یک بخش فقط پرسنل اداریِ همان بخش و با تگِ همان بخش، مثل پیشنهاد خودکار (#21)
+      // محدود به نمای فعلی: بخشِ انتخابی (با تگِ همان بخش) یا «بدون بخش»؛ «همه» مثل قبل همهٔ پرسنل اداری (#21)
       const dept = (ui.dept !== 'all' && ui.dept !== 'none') ? ui.dept : undefined;
-      const changes = Core.autoAssignOffice(dbv(), { a: m.a, b: m.b, dept });
+      const changes = Core.autoAssignOffice(dbv(), { a: m.a, b: m.b, dept, noDept: ui.dept === 'none' });
       if (!changes.length) return flash('خانه‌ای برای پر شدن اداری وجود ندارد (یا قبلاً پر شده‌اند یا پرسنل اداری تعریف نشده است).', false);
       const st = [];
       for (const ch of changes) setAssign(ch.pid, ch.j, ch.code, st, ch.deptId);

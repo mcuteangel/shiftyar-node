@@ -941,10 +941,12 @@ table.roster { width: 100%; }
 
   /** پر کردن خودکار شیفت برای پرسنل اداری در یک بازه زمانی */
   function autoAssignOffice(db, o) {
-    // نمایِ یک بخش (#21): فقط پرسنل اداریِ همان بخش (اصلی یا فرعی) و تگِ بخشِ نما روی خانه‌های جدید —
-    // هم‌سو با پیشنهاد خودکار؛ بدون dept رفتار پیشین حفظ می‌شود (همهٔ پرسنل، بخشِ اصلی)
+    // محدود به نمای فعلی (#21، نیت‌پیک CodeAnt روی PR #67): «dept» یعنی فقط پرسنل اداریِ همان بخش
+    // (اصلی یا فرعی) با تگِ بخشِ نما روی خانه‌های جدید؛ «noDept» یعنی فقط پرسنل بدون بخش («بدون بخش»).
+    // بدون هیچ‌کدام رفتار پیشین حفظ می‌شود (همهٔ پرسنل، بخشِ اصلی) — هم‌سو با پیشنهاد خودکار
     let people = (db.people || []).filter((p) => p.workType === 'office');
-    if (o.dept) people = people.filter((p) => personDepts(p).includes(o.dept));
+    if (o.noDept) people = people.filter((p) => !personDepts(p).length);
+    else if (o.dept) people = people.filter((p) => personDepts(p).includes(o.dept));
     const S = db.settings;
     const hm = holidayMap(S, db.holidays, o.a, o.b);
     const assign = db.assign || {};
@@ -2704,9 +2706,9 @@ document.addEventListener('click', async (e) => {
     }
     case 'autoassignoffice': {
       const m = monthInfo();
-      // در نمای یک بخش فقط پرسنل اداریِ همان بخش و با تگِ همان بخش، مثل پیشنهاد خودکار (#21)
+      // محدود به نمای فعلی: بخشِ انتخابی (با تگِ همان بخش) یا «بدون بخش»؛ «همه» مثل قبل همهٔ پرسنل اداری (#21)
       const dept = (ui.dept !== 'all' && ui.dept !== 'none') ? ui.dept : undefined;
-      const changes = Core.autoAssignOffice(dbv(), { a: m.a, b: m.b, dept });
+      const changes = Core.autoAssignOffice(dbv(), { a: m.a, b: m.b, dept, noDept: ui.dept === 'none' });
       if (!changes.length) return flash('خانه‌ای برای پر شدن اداری وجود ندارد (یا قبلاً پر شده‌اند یا پرسنل اداری تعریف نشده است).', false);
       const st = [];
       for (const ch of changes) setAssign(ch.pid, ch.j, ch.code, st, ch.deptId);
