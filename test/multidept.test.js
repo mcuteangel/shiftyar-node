@@ -226,6 +226,12 @@ test('مرخصی: مدیر بخش فرعی نمی‌تواند تأیید کند
   assert.equal((await mgrB.post(`/api/requests/${id}/respond`, { action: 'approve', reply: '' })).status, 403);
   assert.equal(await assignCodeOf(admin, 'p1', d1), 'M', 'شیفت بخش اصلی دست‌نخورده');
   assert.equal(await assignCodeOf(admin, 'p1', d2d), 'M', 'شیفت بخش فرعی دست‌نخورده');
+  // شیفت کاری در بازه، تأیید را ۴۰۹ می‌دهد (#14)؛ شیفت‌ها پاک می‌شوند تا تأیید ممکن شود
+  r = await mgrA.post(`/api/requests/${id}/respond`, { action: 'approve', reply: '' });
+  assert.equal(r.status, 409, JSON.stringify(r.data));
+  assert.equal(await assignCodeOf(admin, 'p1', d1), 'M', 'شیفت بخش اصلی دست‌نخورده ماند');
+  r = await admin.post('/api/assign', { changes: [{ pid: 'p1', j: d1, code: null }, { pid: 'p1', j: d2d, code: null }] });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
   r = await mgrA.post(`/api/requests/${id}/respond`, { action: 'approve', reply: '' });
   assert.equal(r.status, 200, JSON.stringify(r.data));
   assert.equal(r.data.request.status, 'approved');

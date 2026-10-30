@@ -748,6 +748,15 @@ function createApp(opts = {}) {
       else if (action === 'reject') { set('rejected', true); writeLog(ctx.user, `رد درخواست: ${label}`); }
       else {
         if (r.kind === 'leave') {
+          // بازبینی هنگام تأیید (#14): مرخصی فقط زمانی اعمال می‌شود که از ثبت درخواست
+          // به بعد شیفت کاریِ واقعی در بازه ثبت نشده باشد؛ روزهای خالی یا کد ویژه جایگزین می‌شوند
+          const isWork = (c) => !!c && !Core.SPECIAL[c];
+          const busy = q('SELECT day, code FROM assign WHERE person_id = ? AND day BETWEEN ? AND ?')
+            .all(r.person_id, r.d1, r.d2)
+            .filter((row) => isWork(row.code));
+          if (busy.length) {
+            throw new HttpError(409, 'تأیید ممکن نیست چون برنامه از زمان درخواست تغییر کرده است: شیفت کاری در ' + busy.map((row) => Core.fmtDate(row.day)).join('، ') + ' ثبت شده است.');
+          }
           const writes = [];
           for (let d = r.d1; d <= r.d2; d++) writes.push([r.person_id, d, r.leave_code]);
           applyWrites(writes);
