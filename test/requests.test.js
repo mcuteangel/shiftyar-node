@@ -62,7 +62,8 @@ test.before(async () => {
 test.after(async () => { await app.close(); });
 
 test('مرخصی: اعتبارسنجی، دید، تأیید و اعمال روی برنامه', async () => {
-  await setA([{ pid: 'p1', j: T + 10, code: 'M' }]);
+  // کد ویژهٔ قبلی مانع تأیید نیست؛ فقط شیفت کاریِ بعد از ثبت درخواست ۴۰۹ می‌دهد (#14)
+  await setA([{ pid: 'p1', j: T + 10, code: 'RS' }]);
   let r = await sA.post('/api/requests', { kind: 'leave', code: 'XX', from: T + 10, to: T + 11 });
   assert.equal(r.status, 400, 'نوع نامعتبر');
   r = await sA.post('/api/requests', { kind: 'leave', code: 'LV', from: T + 12, to: T + 10 });
@@ -88,9 +89,35 @@ test('مرخصی: اعتبارسنجی، دید، تأیید و اعمال رو�
   r = await respond(mgr1, id, 'approve', 'موافقم');
   assert.equal(r.status, 200, JSON.stringify(r.data));
   assert.equal(r.data.request.status, 'approved');
-  assert.equal(await assignOf('p1', T + 10), 'LV', 'روی شیفت قبلی نوشته می‌شود');
+  assert.equal(await assignOf('p1', T + 10), 'LV', 'روی کد ویژهٔ قبلی نوشته می‌شود');
   assert.equal(await assignOf('p1', T + 11), 'LV');
   assert.equal((await respond(mgr1, id, 'approve')).status, 403, 'دوباره ممکن نیست');
+});
+
+test('مرخصی: تداخل با شیفت ثبت‌شده بعد از درخواست، تأیید را ۴۰۹ می‌کند (#14)', async () => {
+  // درخواست مرخصی روی روزهای خالی ثبت می‌شود
+  let r = await sB.post('/api/requests', { kind: 'leave', code: 'LV', from: T + 70, to: T + 71 });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const id = r.data.request.id;
+  // بعد از ثبت درخواست، شیفت کاری داخل بازه گذاشته می‌شود
+  await setA([{ pid: 'p2', j: T + 70, code: 'M' }]);
+  r = await respond(mgr1, id, 'approve');
+  assert.equal(r.status, 409, JSON.stringify(r.data));
+  assert.match(r.data.error, /از زمان درخواست تغییر کرده/);
+  assert.match(r.data.error, /شیفت کاری/);
+  assert.equal(await assignOf('p2', T + 70), 'M', 'شیفت کاری دست‌نخورده ماند');
+  assert.equal(await assignOf('p2', T + 71), null);
+  // درخواست همچنان در انتظار است تا مدیر برنامه را اصلاح یا درخواست را رد کند
+  r = (await mgr1.get('/api/requests')).data.requests.find((x) => x.id === id);
+  assert.ok(r, 'درخواست هنوز در فهرست مدیر است');
+  assert.equal(r.status, 'pending');
+  // شیفت کاری حذف می‌شود و روز دیگر فقط کد ویژه دارد → تأیید ممکن است
+  await setA([{ pid: 'p2', j: T + 70, code: null }, { pid: 'p2', j: T + 71, code: 'RS' }]);
+  r = await respond(mgr1, id, 'approve');
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.request.status, 'approved');
+  assert.equal(await assignOf('p2', T + 70), 'LV');
+  assert.equal(await assignOf('p2', T + 71), 'LV', 'کد ویژهٔ قبلی با مرخصی جایگزین می‌شود');
 });
 
 test('مرخصی: رد و لغو', async () => {
