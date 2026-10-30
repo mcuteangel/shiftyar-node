@@ -152,6 +152,9 @@ table.roster tr.grp td { background: var(--surface2); text-align: right; padding
 .c.sp { background: repeating-linear-gradient(135deg, var(--surface2) 0 4px, var(--line) 4px 5px); border-color: var(--line); color: var(--muted); font-weight: 600; direction: rtl; }
 .c.SK { color: var(--accent); border-color: var(--accent); }
 .c.AB { color: var(--hol-ink); border-color: var(--hol-ink); background: var(--hol); }
+/* رنگِ بخشِ خانه روی مرزِ سلول‌های ویژه هم دیده شود (#24)؛ بعد از .SK/.AB تا تگِ بخش برنده شود.
+   هاشور و رنگ متن، هویت «ویژه» را حفظ می‌کنند؛ بدون --dc (لِجند) همان رنگ خط قبلی می‌ماند. */
+.c.sp { border-color: color-mix(in srgb, var(--dc, var(--line)) 60%, var(--line)); }
 td.warn .c, .pc-day.warn .c { outline: 2px solid var(--warn); outline-offset: 1px; }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--muted); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -938,7 +941,12 @@ table.roster { width: 100%; }
 
   /** پر کردن خودکار شیفت برای پرسنل اداری در یک بازه زمانی */
   function autoAssignOffice(db, o) {
-    const people = (db.people || []).filter((p) => p.workType === 'office');
+    // محدود به نمای فعلی (#21، نیت‌پیک CodeAnt روی PR #67): «dept» یعنی فقط پرسنل اداریِ همان بخش
+    // (اصلی یا فرعی) با تگِ بخشِ نما روی خانه‌های جدید؛ «noDept» یعنی فقط پرسنل بدون بخش («بدون بخش»).
+    // بدون هیچ‌کدام رفتار پیشین حفظ می‌شود (همهٔ پرسنل، بخشِ اصلی) — هم‌سو با پیشنهاد خودکار
+    let people = (db.people || []).filter((p) => p.workType === 'office');
+    if (o.noDept) people = people.filter((p) => !personDepts(p).length);
+    else if (o.dept) people = people.filter((p) => personDepts(p).includes(o.dept));
     const S = db.settings;
     const hm = holidayMap(S, db.holidays, o.a, o.b);
     const assign = db.assign || {};
@@ -970,7 +978,11 @@ table.roster { width: 100%; }
             if (match) code = match.code;
           }
           // کد نامعتبر/تهی هرگز صادر نمی‌شود؛ وگرنه سرور کل بچ را رد می‌کند
-          if (code) changes.push({ pid: p.id, j, code });
+          if (code) {
+            const ch = { pid: p.id, j, code };
+            if (o.dept) ch.deptId = o.dept;
+            changes.push(ch);
+          }
         }
       }
     }
@@ -1510,7 +1522,7 @@ function monthInfo() { const a = j2d(ui.jy, ui.jm, 1), len = monthLen(ui.jy, ui.
 function chipHtml(code, color, deptName) {
   if (!code) return '';
   const suffix = deptName ? ` · ${deptName}` : '';
-  if (SPECIAL[code]) return `<span class="c sp ${code}" title="${esc(SPECIAL[code].name + suffix)}">${SPECIAL[code].short}</span>`;
+  if (SPECIAL[code]) return `<span class="c sp ${code}" style="--dc:${esc(color)}" title="${esc(SPECIAL[code].name + suffix)}">${SPECIAL[code].short}</span>`;
   const sh = shiftOf(code);
   return `<span class="c" style="--dc:${esc(color)}" title="${esc((sh ? sh.name : code) + suffix)}">${esc(code)}</span>`;
 }
@@ -2694,10 +2706,12 @@ document.addEventListener('click', async (e) => {
     }
     case 'autoassignoffice': {
       const m = monthInfo();
-      const changes = Core.autoAssignOffice(dbv(), { a: m.a, b: m.b });
+      // محدود به نمای فعلی: بخشِ انتخابی (با تگِ همان بخش) یا «بدون بخش»؛ «همه» مثل قبل همهٔ پرسنل اداری (#21)
+      const dept = (ui.dept !== 'all' && ui.dept !== 'none') ? ui.dept : undefined;
+      const changes = Core.autoAssignOffice(dbv(), { a: m.a, b: m.b, dept, noDept: ui.dept === 'none' });
       if (!changes.length) return flash('خانه‌ای برای پر شدن اداری وجود ندارد (یا قبلاً پر شده‌اند یا پرسنل اداری تعریف نشده است).', false);
       const st = [];
-      for (const ch of changes) setAssign(ch.pid, ch.j, ch.code, st);
+      for (const ch of changes) setAssign(ch.pid, ch.j, ch.code, st, ch.deptId);
       finishStroke(st, 'تکمیل خودکار اداری');
       flash(`${fa(st.length)} خانه اداری برای پرسنل اداری تکمیل شد.`, true);
       return render();
