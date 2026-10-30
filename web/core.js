@@ -605,7 +605,12 @@
 
   /** پر کردن خودکار شیفت برای پرسنل اداری در یک بازه زمانی */
   function autoAssignOffice(db, o) {
-    const people = (db.people || []).filter((p) => p.workType === 'office');
+    // محدود به نمای فعلی (#21، نیت‌پیک CodeAnt روی PR #67): «dept» یعنی فقط پرسنل اداریِ همان بخش
+    // (اصلی یا فرعی) با تگِ بخشِ نما روی خانه‌های جدید؛ «noDept» یعنی فقط پرسنل بدون بخش («بدون بخش»).
+    // بدون هیچ‌کدام رفتار پیشین حفظ می‌شود (همهٔ پرسنل، بخشِ اصلی) — هم‌سو با پیشنهاد خودکار
+    let people = (db.people || []).filter((p) => p.workType === 'office');
+    if (o.noDept) people = people.filter((p) => !personDepts(p).length);
+    else if (o.dept) people = people.filter((p) => personDepts(p).includes(o.dept));
     const S = db.settings;
     const hm = holidayMap(S, db.holidays, o.a, o.b);
     const assign = db.assign || {};
@@ -637,7 +642,11 @@
             if (match) code = match.code;
           }
           // کد نامعتبر/تهی هرگز صادر نمی‌شود؛ وگرنه سرور کل بچ را رد می‌کند
-          if (code) changes.push({ pid: p.id, j, code });
+          if (code) {
+            const ch = { pid: p.id, j, code };
+            if (o.dept) ch.deptId = o.dept;
+            changes.push(ch);
+          }
         }
       }
     }
