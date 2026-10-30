@@ -605,7 +605,10 @@
 
   /** پر کردن خودکار شیفت برای پرسنل اداری در یک بازه زمانی */
   function autoAssignOffice(db, o) {
-    const people = (db.people || []).filter((p) => p.workType === 'office');
+    // نمایِ یک بخش (#21): فقط پرسنل اداریِ همان بخش (اصلی یا فرعی) و تگِ بخشِ نما روی خانه‌های جدید —
+    // هم‌سو با پیشنهاد خودکار؛ بدون dept رفتار پیشین حفظ می‌شود (همهٔ پرسنل، بخشِ اصلی)
+    let people = (db.people || []).filter((p) => p.workType === 'office');
+    if (o.dept) people = people.filter((p) => personDepts(p).includes(o.dept));
     const S = db.settings;
     const hm = holidayMap(S, db.holidays, o.a, o.b);
     const assign = db.assign || {};
@@ -637,7 +640,11 @@
             if (match) code = match.code;
           }
           // کد نامعتبر/تهی هرگز صادر نمی‌شود؛ وگرنه سرور کل بچ را رد می‌کند
-          if (code) changes.push({ pid: p.id, j, code });
+          if (code) {
+            const ch = { pid: p.id, j, code };
+            if (o.dept) ch.deptId = o.dept;
+            changes.push(ch);
+          }
         }
       }
     }

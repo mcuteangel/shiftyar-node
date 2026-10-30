@@ -277,6 +277,29 @@ t('پرسنل اداری: محاسبه موظفی پویا و انتساب خو�
   assert.strictEqual(r2.overtime, 0);
 });
 
+t('تکمیل خودکار اداری: در نمای بخش فقط پرسنل همان بخش و با تگِ همان بخش (#21)', () => {
+  const settings = Object.assign({}, C.defaultSettings(), { officePatterns: [pattern6d] });
+  const offShift = { code: 'OF', name: 'اداری', isOffice: true, kind: 'simple', segs: [{ o: 0, s: '07:00', e: '13:00' }] };
+  const shifts = C.defaultShifts().concat([offShift]);
+  const pMain = { id: 'p_m', first: 'الف', last: 'اداری', contract: 'official', workType: 'office', officePatternId: 'pat6d', deptId: 'd2' };
+  const pExtra = { id: 'p_x', first: 'ب', last: 'اداری', contract: 'official', workType: 'office', officePatternId: 'pat6d', deptId: 'd1', extraDeptIds: ['d2'] };
+  const pOut = { id: 'p_o', first: 'ج', last: 'اداری', contract: 'official', workType: 'office', officePatternId: 'pat6d', deptId: 'd1' };
+  const db = { settings, shifts, holidays: C.defaultHolidays(), people: [pMain, pExtra, pOut], assign: {} };
+  const a = C.j2d(1405, 7, 1), b = a + 29; // مهر ۱۴۰۵: ۲۶ روز کاری
+
+  // نمای «همه»: هر سه نفر پر می‌شوند و هیچ تگِ بخشی صادر نمی‌شود (رفتار پیشین)
+  const all = C.autoAssignOffice(db, { a, b });
+  assert.strictEqual(all.length, 3 * 26);
+  assert.ok(all.every((ch) => ch.deptId === undefined), 'بدون فیلتر بخش، تگ بخشی نیست');
+
+  // نمای بخش d2: فقط عضوهای d2 (اصلی یا فرعی) و خانه‌ها با تگِ d2
+  const d2 = C.autoAssignOffice(db, { a, b, dept: 'd2' });
+  assert.strictEqual(d2.length, 2 * 26);
+  assert.ok(d2.every((ch) => (ch.pid === 'p_m' || ch.pid === 'p_x') && ch.deptId === 'd2'));
+
+  // نمای بخشی که هیچ‌کدام عضو آن نیستند: هیچ تغییری
+  assert.strictEqual(C.autoAssignOffice(db, { a, b, dept: 'd9' }).length, 0);
+});
 t('پرسنل اداری: تکمیل خودکار بدون شیفت isOffice کد معتبر می‌دهد (#43)', () => {
   // بدون هیچ شیفت isOffice، fallback قبلی 'OF' بود که سرور رد می‌کند
   // (OF نه در جدول شیفت‌هاست نه در SPECIAL)؛ حالا 'M' می‌دهد که هم معتبر است

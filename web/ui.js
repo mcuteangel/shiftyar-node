@@ -434,7 +434,7 @@ function monthInfo() { const a = j2d(ui.jy, ui.jm, 1), len = monthLen(ui.jy, ui.
 function chipHtml(code, color, deptName) {
   if (!code) return '';
   const suffix = deptName ? ` · ${deptName}` : '';
-  if (SPECIAL[code]) return `<span class="c sp ${code}" title="${esc(SPECIAL[code].name + suffix)}">${SPECIAL[code].short}</span>`;
+  if (SPECIAL[code]) return `<span class="c sp ${code}" style="--dc:${esc(color)}" title="${esc(SPECIAL[code].name + suffix)}">${SPECIAL[code].short}</span>`;
   const sh = shiftOf(code);
   return `<span class="c" style="--dc:${esc(color)}" title="${esc((sh ? sh.name : code) + suffix)}">${esc(code)}</span>`;
 }
@@ -1618,10 +1618,12 @@ document.addEventListener('click', async (e) => {
     }
     case 'autoassignoffice': {
       const m = monthInfo();
-      const changes = Core.autoAssignOffice(dbv(), { a: m.a, b: m.b });
+      // در نمای یک بخش فقط پرسنل اداریِ همان بخش و با تگِ همان بخش، مثل پیشنهاد خودکار (#21)
+      const dept = (ui.dept !== 'all' && ui.dept !== 'none') ? ui.dept : undefined;
+      const changes = Core.autoAssignOffice(dbv(), { a: m.a, b: m.b, dept });
       if (!changes.length) return flash('خانه‌ای برای پر شدن اداری وجود ندارد (یا قبلاً پر شده‌اند یا پرسنل اداری تعریف نشده است).', false);
       const st = [];
-      for (const ch of changes) setAssign(ch.pid, ch.j, ch.code, st);
+      for (const ch of changes) setAssign(ch.pid, ch.j, ch.code, st, ch.deptId);
       finishStroke(st, 'تکمیل خودکار اداری');
       flash(`${fa(st.length)} خانه اداری برای پرسنل اداری تکمیل شد.`, true);
       return render();
