@@ -60,6 +60,25 @@ t('شیفت شب پنجشنبه→جمعه: ساعت‌های جمعه با ضر
   near(r.weighted, 300 + 450 * 1.4);
   x = mk('official'); r = C.computeRange(x.db, x.p, a, b);
   near(r.weighted, 750);
+  // پیمانی و تبصره ۳ هم مثل رسمی مشمول قانون مدیریت خدمات کشوری‌اند، نه قانون کار → فاکتور ۱ (#9)
+  for (const ct of ['peymani', 't3']) {
+    x = mk(ct); r = C.computeRange(x.db, x.p, a, b);
+    near(r.weighted, 750);
+  }
+});
+t('قراردادهای پیمانی و تبصره ۳: برچسب‌ها و فاکتور پیش‌فرض ۱ (#9)', () => {
+  assert.strictEqual(C.CONTRACTS.peymani, 'پیمانی');
+  assert.strictEqual(C.CONTRACTS.t3, 'تبصره ۳');
+  const f = C.defaultSettings().factors;
+  assert.strictEqual(f.peymani, 1);
+  assert.strictEqual(f.t3, 1);
+  // پیکربندی قدیمی که کلیدهای جدید را ندارد هم باید فاکتور ۱ بگیرد (fallback)
+  const old = C.defaultSettings(); delete old.factors.peymani; delete old.factors.t3;
+  const thu = C.j2d(1405, 7, 2);
+  const db = { settings: old, holidays: C.defaultHolidays(), shifts: C.defaultShifts(), assign: { p: { [thu]: 'N' } } };
+  const a = C.j2d(1405, 7, 1), b = a + 29;
+  near(C.computeRange(db, { id: 'p', contract: 'peymani' }, a, b).weighted, 750);
+  near(C.computeRange(db, { id: 'p', contract: 't3' }, a, b).weighted, 750);
 });
 t('شیفت شب روز آخر ماه: فقط بخش داخل ماه شمرده می‌شود', () => {
   const last = C.j2d(1405, 7, 30);

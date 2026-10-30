@@ -130,7 +130,7 @@
     RS: { name: 'استراحت', short: 'را', credit: false },
     AB: { name: 'غیبت', short: 'غ', credit: false },
   };
-  const CONTRACTS = { company: 'شرکتی', t4: 'تبصره ۴', official: 'رسمی' };
+  const CONTRACTS = { company: 'شرکتی', t4: 'تبصره ۴', official: 'رسمی', peymani: 'پیمانی', t3: 'تبصره ۳' };
   const WORK_TYPES = { rotating: 'شیفت در گردش', office: 'اداری' };
 
   const defaultOfficePatterns = () => [
@@ -167,7 +167,7 @@
   const defaultSettings = () => ({
     fridayHoliday: true,
     dutyMin: 440, // ۷ ساعت و ۲۰ دقیقه
-    factors: { company: 1.4, t4: 1.4, official: 1 },
+    factors: { company: 1.4, t4: 1.4, official: 1, peymani: 1, t3: 1 }, // پیمانی و تبصره ۳ مثل رسمی مشمول قانون مدیریت خدمات کشوری، نه قانون کار (#9)
     minRestH: 11,
     otCapH: 0,
   });
