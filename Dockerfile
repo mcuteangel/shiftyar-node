@@ -1,4 +1,4 @@
-FROM node:22-slim
+FROM node:26-slim
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3000 \
